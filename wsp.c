@@ -57,9 +57,16 @@ typedef unsigned char byte;
 struct usb_dev_handle *devh;
 int debug = 0;
 
+typedef enum mode_s
+{
+	get_mode,
+	set_mode
+} mode_t;
+
 typedef struct program_settings_s
 {
 	int debug;					// Debug-level.
+	mode_t mode;				// Mode.
 	unsigned int count;			// The number of history entires to fetch. 0 = All.
 	int show_status;			// 0 or 1. Show current status of device.
 	int show_alarms;			// 0 or 1. Shows the current alarms set on the device.
@@ -68,6 +75,10 @@ typedef struct program_settings_s
 	int show_maxmin;			// 0 or 1. Show max min values.
 	int show_easyweather;		// 0 or 1. Outputs the history data in the "EasyWeather.dat" format. "count" decides how many.
 	int show_summary;			// 0 or 1. Shows a summary of the current weather.
+	int set_timezone;			// 0 or 1. Should a new timezone be set?
+	signed char timezone;		// -12 to 12. The new timezone to be set.
+	int set_delay;				// 0 or 1. Should a new delay be set?.
+	signed char delay;			// 0 to 255. The new delay between weather updates.
 } program_settings_t;
 
 static program_settings_t program_settings;
@@ -244,24 +255,40 @@ typedef struct weather_data_s
 	unsigned char raw_data[16];
 } weather_data_t;
 
+//
+// Shows usage.
+//
 void show_usage(char *program_name)
 {
 	printf("Weather Station Poller v%u.%u Copyright (C) Joakim Söderberg.\n", 1, 0);
 	printf("  Usage: %s [option]... \n", program_name);
 	printf("\n");
-	printf("  -e, --easyweather     Outputs the weather data in the easyweather.dat csv format.\n");
-	printf("  -s, --status          Shows status of the device, such as data count, date/time.\n");
+	printf("  -e, --easyweather     Outputs the weather data in the\n");
+	printf("                        easyweather.dat csv format.\n");
+	printf("  -s, --status          Shows status of the device, such\n");
+	printf("                        as data count, date/time.\n");
 	printf("  --settings            Prints the weather display's settings.\n");
-	printf("  --maxmin              Outputs the max/min weather data recorded by the station.\n");
-	printf("  --alarms              Displays all alarms set on the device and if they're enabled.\n");
-	printf("  -c, --count #         The number of history items to read. Default is 1.\n");
+	printf("  --maxmin              Outputs the max/min weather data\n");
+	printf("                        recorded by the station.\n");
+	printf("  --alarms              Displays all alarms set on the device\n");
+	printf("                        and if they're enabled.\n");
+	printf("  -c, --count #	        The number of history items to read (1-4080).\n");
+	printf("                        Default is 1.\n");
 	printf("  -a, --all             Gets all available history items.\n");
-	printf("  -v[v..]               Shows extra debug information. For more detailed info, add more v's.\n");
+	printf("  -v[v..]               Shows extra debug information. For more\n");
+	printf("                        detailed info, add more v's.\n");
+	printf("  -t, --timezone #      Sets the timezone offset from CET\n");
+	printf("                        from -12 to 12.\n");
+	printf("  -d, --delay #         Sets the read update delay between\n");
+	printf("                        weather data readings.\n");
 	printf("  --summary             Shows a small summary of the last recorded weather.\n");
 	printf("  -h, --help            Shows this help text.\n");
 	printf("\n");
 }
 
+//
+// Finds the device based on vendor and product id.
+//
 struct usb_device *find_device(int vendor, int product) 
 {
     struct usb_bus *bus;
@@ -281,6 +308,9 @@ struct usb_device *find_device(int vendor, int product)
     return NULL;
 }
 
+//
+// Closes the connection to the USB device.
+//
 void close_device(struct usb_dev_handle *h)
 {
 	int ret = usb_release_interface(h, 0);
@@ -294,6 +324,9 @@ void close_device(struct usb_dev_handle *h)
 		fprintf(stderr, "Error closing interface: %d\n", ret);
 }
 
+//
+// Handles SIGTERM.
+//
 void sigterm_handler(int signum) 
 {
 	fprintf(stderr, "SIGTERM: Closing device\n");
@@ -301,6 +334,9 @@ void sigterm_handler(int signum)
 	exit(1);
 }
 
+//
+// Opens the USB device.
+//
 struct usb_dev_handle *open_device() 
 {
 	int ret;
@@ -340,6 +376,9 @@ struct usb_dev_handle *open_device()
 	return h;
 }
 
+//
+// Inits the USB descriptors.
+//
 void init_device_descriptors() 
 {	
 	char buf[1024];
@@ -363,6 +402,9 @@ void init_device_descriptors()
 	ret = usb_get_descriptor(devh, USB_DT_REPORT, 0, buf, sizeof(buf));
 }
 
+//
+// Prints bytes for debug purposes.
+//
 void print_bytes(char *bytes, unsigned int len) 
 {
     if ((program_settings.debug == 2) && (len > 0)) 
@@ -378,6 +420,9 @@ void print_bytes(char *bytes, unsigned int len)
 	printf("\n");
 }
 
+//
+// Sends a USB message to the device from a given buffer.
+//
 void send_usb_msgbuf(struct usb_dev_handle *h, char *msg, int msgsize)
 {
 	int bytes_written = 0;
@@ -389,7 +434,7 @@ void send_usb_msgbuf(struct usb_dev_handle *h, char *msg, int msgsize)
 	}
 	
 	bytes_written = usb_control_msg(h, USB_TYPE_CLASS + USB_RECIP_INTERFACE,
-									9, 0x200, 0, msg, msgsize, 1000);
+									9, 0x200, 0, msg, msgsize, USB_TIMEOUT);
 	assert(bytes_written == msgsize);
 }
 
@@ -428,6 +473,9 @@ int read_weather_msg(struct usb_dev_handle *h, char *buf)
 	return usb_interrupt_read(h, ENDPOINT_INTERRUPT_ADDRESS, buf, 32, USB_TIMEOUT);
 }
 
+//
+// Gets a string for the wind direction from the settings byte.
+//
 const char *get_wind_direction(const char data)
 {
 	switch (data)
@@ -482,23 +530,29 @@ bcd_date_t parse_bcd_date(unsigned char date[5])
 	return d;
 }
 
+//
+// Prints a BCD date.
+//
 void print_bcd_date(unsigned char date[5])
 {
 	bcd_date_t d = parse_bcd_date(date);
 	printf("%u-%02u-%02u %02u:%02u:00", d.year, d.month, d.day, d.hour, d.minute);
 }
 
-weather_settings_t get_settings_block(struct usb_dev_handle *h)
+//
+// Gets the raw bytes of the weather settings block.
+//
+void get_settings_block_raw(struct usb_dev_handle *h, char *buf, unsigned int len)
 {
-	weather_settings_t ws;
-	char buf[256];
-	int offset;
+	unsigned int offset;
 	
-	memset(buf, 0, sizeof(buf));
-	memset(&ws, 0, sizeof(ws));
+	assert(len <= WEATHER_SETTINGS_CHUNK_SIZE);
+	assert((len % 32) == 0);
+	
+	memset(buf, 0, len);
 	
 	// Read 256 bytes in 32-byte chunks.
-	for (offset = 0; offset < WEATHER_SETTINGS_CHUNK_SIZE; offset += 32)
+	for (offset = 0; (offset < WEATHER_SETTINGS_CHUNK_SIZE) && (offset < len); offset += 32)
 	{
 		send_weather_msg(h, 0xa1, 0x00, offset, 0x20);
 		read_weather_msg(h, &buf[offset]);
@@ -508,6 +562,19 @@ weather_settings_t get_settings_block(struct usb_dev_handle *h)
 			print_bytes(&buf[offset], 32);
 		}
 	}
+}
+
+//
+// Gets the weather settings block (the first 256 bytes in the weather display memory).
+//
+weather_settings_t get_settings_block(struct usb_dev_handle *h)
+{
+	weather_settings_t ws;
+	char buf[WEATHER_SETTINGS_CHUNK_SIZE];
+	
+	memset(&ws, 0, sizeof(ws));
+
+	get_settings_block_raw(h, buf, sizeof(buf));
 	
 	ws.magic_number[0]				= buf[0];
 	ws.magic_number[1]				= buf[1];
@@ -599,6 +666,117 @@ weather_settings_t get_settings_block(struct usb_dev_handle *h)
 	memcpy(&ws.max_rain_total_date, &buf[251], sizeof(ws.max_rain_total_date));
 	
 	return ws;
+}
+
+//
+// Reads weather ack message when writing setting data.
+//
+int read_weather_ack(struct usb_dev_handle *h)
+{
+	unsigned int i;
+	char buf[8];
+	
+	read_weather_msg(h, buf);
+	
+	// The ack should consist of just 0xa5.
+	for (i = 0; i < 8; i++)
+	{
+		if (debug == 2)
+			printf("%x ", (buf[i] & 0xff));
+		
+		if ((buf[i] & 0xff) != 0xa5)
+			return -1;
+	}
+	
+	if (debug == 2) 
+		printf("\n");
+	
+	return 0;
+}
+
+//
+// Writes a notify byte so the weather station knows a setting has changed.
+//
+void notify_weather_setting_change(struct usb_dev_handle *h)
+{
+	// Write 0xAA to address 0x1a to indicate a change of settings.
+	send_usb_msg8(h, 0xa2, 0x00, 0x1a, 0x20, 0xa2, 0xaa, 0x00, 0x20);
+	read_weather_ack(h);
+}
+
+//
+// Sets a single byte at a specified offset in the fixed weather settings chunk.
+//
+int set_weather_setting_byte(struct usb_dev_handle *h, unsigned int offset, char data)
+{
+	assert(offset < WEATHER_SETTINGS_CHUNK_SIZE);
+	send_usb_msg8(h, 0xa2, 0x00, offset, 0x20, 0xa2, data, 0x00, 0x20);
+	return read_weather_ack(h);
+}
+
+//
+// Sets a weather setting at a given offset in the weather settings chunk.
+//
+int set_weather_setting(struct usb_dev_handle *h, unsigned int offset, char *data, unsigned int len)
+{
+	unsigned int i;
+	for (i = 0; i < len; i++)
+	{
+		if (set_weather_setting_byte(h, offset, data[i]) != 0)
+		{
+			return -1;
+		}
+	}
+	
+	notify_weather_setting_change(h);	
+	return 0;
+}
+
+// TODO: Remake this to weather_settings_t structure and write all changes in that to the device.
+int set_weather_settings_bulk(struct usb_dev_handle *h, unsigned int change_offset, char *data, unsigned int len)
+{
+	unsigned offset;
+	unsigned int i;
+	char buf[WEATHER_SETTINGS_CHUNK_SIZE];
+	
+	// Make sure we're not trying to write outside the settings buffer.
+	assert((change_offset + len) < WEATHER_SETTINGS_CHUNK_SIZE);
+	
+	get_settings_block_raw(h, buf, sizeof(buf));
+	
+	// Change the settings.
+	memcpy(&buf[change_offset], data, len);
+	
+	// Send back the settings in 3 32-bit chunks.
+	for (offset = 0; offset < (32 * 3); offset += 32)
+	{
+		send_weather_msg(h, 0xa0, 0x00, offset, 0x20);
+		
+		// Send 4 * 8 bytes.
+		for (i = offset; i < (offset + (4 * 8)); i += 8)
+		{
+			send_usb_msgbuf(h, &buf[i], 8);
+		}
+		
+		if (read_weather_ack(h) != 0)
+		{	
+			return -1;
+		}
+	}
+	
+	notify_weather_setting_change(h);
+	
+	return 0;
+}
+
+int set_timezone(struct usb_dev_handle *h, signed char timezone)
+{
+	return set_weather_setting(h, 24, (char *)&timezone, 1);
+}
+
+int set_delay(struct usb_dev_handle *h, unsigned char delay)
+{
+	return set_weather_setting(h, 16, (char *)&delay, 1);
 }
 
 //
@@ -912,7 +1090,7 @@ void print_status(weather_settings_t *ws)
 	printf("Magic number:\t\t\t0x%x%x\n", ws->magic_number[0], ws->magic_number[1]);
 	printf("Read period:\t\t\t%u minutes\n", ws->read_period);
 		
-	printf("Timezone:\t\t\tUTC%s%u\n", (ws->timezone > 0) ? "+" : "-", ws->timezone);
+	printf("Timezone:\t\t\tCET%s%u\n", (ws->timezone > 0) ? "+" : "-", ws->timezone);
 	printf("Data count:\t\t\t%u/%u (%1.1f%%)\n", ws->data_count, WEATHER_STATION_HISTORY_MAX, (float)ws->data_count / WEATHER_STATION_HISTORY_MAX * 100);
 	printf("Current memory position:\t%u (0x%x)\n", ws->current_pos, ws->current_pos);
 	printf("Current relative pressure:\t%4.1f hPa\n", ws->relative_pressure * 0.1f);
@@ -1039,7 +1217,6 @@ void get_weather_data(struct usb_dev_handle *h)
 		PRINT_DEBUG("End reading history blocks\n\n");
 	}
 	
-	
 	if (program_settings.show_summary)
 	{
 		print_summary(&ws, &history[ws.data_count]);
@@ -1055,6 +1232,36 @@ void get_weather_data(struct usb_dev_handle *h)
 		}
 	}
 }
+ 
+//
+// Sets weather display settings.
+//
+void set_weather_data(struct usb_dev_handle *h)
+{
+	if (program_settings.set_timezone)
+	{
+		if (!set_timezone(h, program_settings.timezone))
+		{
+			printf("Timezone set to CET%s%d\n", ((program_settings.timezone >= 0) ? "+" : "-"), program_settings.timezone);
+		}
+		else
+		{
+			fprintf(stderr, "Failed to update timezone.\n");
+		}
+	}
+	
+	if (program_settings.set_delay)
+	{
+		if (!set_delay(h, program_settings.delay))
+		{
+			printf("Updating delay set to %u minutes.\n", program_settings.delay);
+		}
+		else
+		{
+			fprintf(stderr, "Failed to update delay.\n");
+		}
+	}
+}
 
 int read_arguments(int argc, char **argv)
 {
@@ -1063,7 +1270,10 @@ int read_arguments(int argc, char **argv)
 	
 	// Set defaults.
 	program_settings.count = 1;
-	program_settings.show_summary = 1;
+	program_settings.mode = get_mode;
+	
+	if (argc == 1)
+		program_settings.show_summary = 1;
 	
 	while (1)
 	{
@@ -1077,13 +1287,15 @@ int read_arguments(int argc, char **argv)
 			{"settings", no_argument,		&program_settings.show_settings, 1},
 			{"easyweather", no_argument,	&program_settings.show_easyweather, 1},
 			{"summary", no_argument,		&program_settings.show_summary, 1},
-			{"count", required_argument,	0, 'c'},
-			{"help", required_argument,		0, 'h'},
+			{"count", required_argument,		0, 'c'},
+			{"timezone", required_argument, 	0, 't'},
+			{"delay", required_argument, 		0, 'd'},
+			{"help", required_argument,			0, 'h'},
 			{0, 0, 0, 0}
 		};
 		
 		int option_index = 0;
-		c = getopt_long(argc, argv, "aesvmc:h", long_options, &option_index);
+		c = getopt_long(argc, argv, "aesvmc:ht:d:", long_options, &option_index);
 		
 		if (c == -1)
 		{
@@ -1093,9 +1305,23 @@ int read_arguments(int argc, char **argv)
 		switch (c)
 		{
 			case 0: break;
-			case 'a':
+			case 'a': program_settings.count = 0; 				break;
+			case 'v': program_settings.debug++;					break;
+			case 'm': program_settings.show_maxmin = 1;			break;
+			case 's': program_settings.show_status = 1;			break;
+			case 'e': program_settings.show_easyweather = 1;	break;
+			case 'd':
 			{
-				program_settings.count = 0;
+				program_settings.mode = set_mode;
+				program_settings.set_delay = 1;
+				program_settings.delay = atoi(optarg);
+				break;
+			}
+			case 't':
+			{
+				program_settings.mode = set_mode;
+				program_settings.set_timezone = 1;
+				program_settings.timezone = atoi(optarg);
 				break;
 			}
 			case 'h':
@@ -1103,30 +1329,10 @@ int read_arguments(int argc, char **argv)
 				show_usage(argv[0]);
 				exit(0);
 			}
-			case 'v':
-			{
-				program_settings.debug++;
-				break;
-			}
 			case 'c':
 			{
 				// The number of history events to fetch.
 				program_settings.count = atoi(optarg);
-				break;
-			}
-			case 'm':
-			{
-				program_settings.show_maxmin = 1;
-				break;
-			}
-			case 's':
-			{
-				program_settings.show_status = 1;
-				break;
-			}
-			case 'e':
-			{
-				program_settings.show_easyweather = 1;
 				break;
 			}
 			default:
@@ -1151,7 +1357,20 @@ int main(int argc, char **argv)
 	devh = open_device();
 	init_device_descriptors();
 	
-	get_weather_data(devh);
+	switch (program_settings.mode)
+	{
+		default:
+		case get_mode:
+		{
+			get_weather_data(devh);
+			break;
+		}
+		case set_mode:
+		{
+			set_weather_data(devh);
+			break;
+		}
+	}
 	
 	close_device(devh);
 
