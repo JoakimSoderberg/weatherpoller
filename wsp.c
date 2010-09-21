@@ -41,7 +41,7 @@
 
 #define MAJOR_VERSION 1
 #define MINOR_VERSION 0
-#define BUILD_NUM "$Rev$"
+#define BUILD_NUM "$Revision$"
 
 #define VENDOR_ID	0x1941
 #define PRODUCT_ID	0x8021
