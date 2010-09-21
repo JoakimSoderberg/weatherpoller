@@ -27,7 +27,6 @@
 // including the EasyWeather.dat layout
 // (http://www.jim-easterbrook.me.uk/weather/ew/).
 //
-
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -39,6 +38,10 @@
 #include <time.h>
 #include <math.h>
 #include <getopt.h>
+
+#define MAJOR_VERSION 1
+#define MINOR_VERSION 0
+#define BUILD_NUM "$rev"
 
 #define VENDOR_ID	0x1941
 #define PRODUCT_ID	0x8021
@@ -264,7 +267,8 @@ typedef struct weather_data_s
 //
 void show_usage(char *program_name)
 {
-	printf("Weather Station Poller v%u.%u Copyright (C) Joakim Söderberg.\n", 1, 0);
+	printf("Weather Station Poller v%u.%u %s\n", MAJOR_VERSION, MINOR_VERSION, BUILD_NUM);
+	printf("Copyright (C) Joakim Söderberg.\n");
 	printf("  Usage: %s [option]... \n", program_name);
 	printf("\n");
 	printf("  -e, --easyweather     Outputs the weather data in the\n");
