@@ -285,7 +285,7 @@ typedef struct weather_data_s
 //
 void show_usage(char *program_name)
 {
-	printf("Weather Station Poller v%u.%u %s %d\n", MAJOR_VERSION, MINOR_VERSION, BUILD_NUM, svn_revision());
+	printf("Weather Station Poller v%u.%u build %d\n", MAJOR_VERSION, MINOR_VERSION, svn_revision());
 	printf("Copyright (C) Joakim Söderberg.\n");
 	printf("  Usage: %s [option]... \n", program_name);
 	printf("\n");
