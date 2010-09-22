@@ -1464,7 +1464,7 @@ int read_arguments(int argc, char **argv)
 		};
 		
 		int option_index = 0;
-		c = getopt_long(argc, argv, "aesvmc:ht:d:A", long_options, &option_index);
+		c = getopt_long(argc, argv, "aesvmc:ht:d:A:", long_options, &option_index);
 		
 		if (c == -1)
 		{
