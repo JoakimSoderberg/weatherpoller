@@ -60,6 +60,24 @@ typedef unsigned char byte;
 struct usb_dev_handle *devh;
 int debug = 0;
 
+int svn_revision()
+{
+	char *s = BUILD_NUM;
+	
+	while (*s)
+	{
+		if (*s == ':')
+		{
+			s++;
+			return atoi(s);
+		}
+		
+		s++;
+	}
+	
+	return 0;
+}
+
 typedef enum mode_s
 {
 	get_mode,
@@ -267,7 +285,7 @@ typedef struct weather_data_s
 //
 void show_usage(char *program_name)
 {
-	printf("Weather Station Poller v%u.%u %s\n", MAJOR_VERSION, MINOR_VERSION, BUILD_NUM);
+	printf("Weather Station Poller v%u.%u %s %d\n", MAJOR_VERSION, MINOR_VERSION, BUILD_NUM, svn_revision());
 	printf("Copyright (C) Joakim Söderberg.\n");
 	printf("  Usage: %s [option]... \n", program_name);
 	printf("\n");
