@@ -387,7 +387,15 @@ struct usb_dev_handle *open_device()
     usb_find_devices();
 	
     dev = find_device(program_settings.vendor_id, program_settings.product_id);
-    assert(dev);
+	
+	if (!dev)
+	{
+		fprintf(stderr, "No device with vendor id: 0x%x (%d) and product id: %x (%d) was found\n", 
+			program_settings.vendor_id, program_settings.vendor_id, 
+			program_settings.product_id, program_settings.product_id);
+		exit(1);
+	}
+	
     h = usb_open(dev);
     assert(h);
     signal(SIGTERM, sigterm_handler);
@@ -409,7 +417,12 @@ struct usb_dev_handle *open_device()
     }
 	
     ret = usb_set_altinterface(h, 0);
-    assert(ret >= 0);
+	
+	if (!h || ret != 0)
+	{
+		fprintf(stderr, "Failed to open USB device, errorcode - %d\n", ret);
+		exit(1);
+	}
 	
 	return h;
 }
@@ -445,7 +458,7 @@ void init_device_descriptors()
 //
 void print_bytes(char *bytes, unsigned int len) 
 {
-    if ((program_settings.debug == 2) && (len > 0)) 
+    if ((program_settings.debug >= 2) && (len > 0)) 
 	{
 		int i;
 		
@@ -595,7 +608,7 @@ void get_settings_block_raw(struct usb_dev_handle *h, char *buf, unsigned int le
 		send_weather_msg(h, 0xa1, 0x00, offset, 0x20);
 		read_weather_msg(h, &buf[offset]);
 		
-		if (debug == 2)
+		if (debug >= 2)
 		{
 			print_bytes(&buf[offset], 32);
 		}
@@ -719,14 +732,14 @@ int read_weather_ack(struct usb_dev_handle *h)
 	// The ack should consist of just 0xa5.
 	for (i = 0; i < 8; i++)
 	{
-		if (debug == 2)
+		if (debug >= 2)
 			printf("%x ", (buf[i] & 0xff));
 		
 		if ((buf[i] & 0xff) != 0xa5)
 			return -1;
 	}
 	
-	if (debug == 2) 
+	if (debug >= 2) 
 		printf("\n");
 	
 	return 0;
@@ -831,7 +844,7 @@ weather_data_t get_history_chunk(struct usb_dev_handle *h, weather_settings_t *w
 	send_weather_msg(h, 0xa1, high_pos, low_pos, 0x20);
 	read_weather_msg(h, buf);
 	
-	if (debug == 2)
+	if (debug >= 2)
 	{
 		print_bytes(buf, 32);
 	}
@@ -1374,11 +1387,14 @@ void get_weather_data(struct usb_dev_handle *h)
 	
 	if (program_settings.show_summary)
 	{
+		PRINT_DEBUG("Show summary:\n");
 		print_summary(&ws, &history[ws.data_count]);
 	}
 	
 	if (program_settings.show_formatted)
 	{
+		PRINT_DEBUG("Show formatted:\n");
+		
 		for (i = (ws.data_count - items_to_read + 1); i <= ws.data_count; i++)
 		{
 			print_history_item_formatstring(&ws, history, ws.data_count, i, program_settings.format_str);
@@ -1436,9 +1452,6 @@ int read_arguments(int argc, char **argv)
 	program_settings.product_id = PRODUCT_ID;
 	program_settings.vendor_id = VENDOR_ID;
 	
-	if (argc == 1)
-		program_settings.show_summary = 1;
-	
 	while (1)
 	{
 		static struct option long_options[] = 
@@ -1486,11 +1499,11 @@ int read_arguments(int argc, char **argv)
 				}
 				else if (!strcmp("productid", long_options[option_index].name))
 				{
-					program_settings.product_id = PRODUCT_ID;
+					sscanf(optarg, "%x", &program_settings.product_id);
 				}
 				else if (!strcmp("vendorid", long_options[option_index].name))
 				{
-					program_settings.vendor_id = VENDOR_ID;
+					sscanf(optarg, "%x", &program_settings.vendor_id);
 				}
 				
 				break;
@@ -1535,6 +1548,16 @@ int read_arguments(int argc, char **argv)
 		}
 	}
 	
+	// Set show summary as default if nothing else has been set to show.
+	if (!program_settings.show_status 
+	&& !program_settings.show_maxmin 
+	&& !program_settings.show_easyweather 
+	&& !program_settings.show_formatlist
+	&& !program_settings.show_formatted)
+	{
+		program_settings.show_summary = 1;
+	}
+	
 	debug = program_settings.debug;
 	
 	return 0;
@@ -1543,7 +1566,10 @@ int read_arguments(int argc, char **argv)
 int main(int argc, char **argv)
 {
 	if (read_arguments(argc, argv))
+	{
+		printf("Error reading arguments\n");
 		return 1;
+	}
 		
 	if (program_settings.show_formatlist)
 	{
