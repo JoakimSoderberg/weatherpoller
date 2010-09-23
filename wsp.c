@@ -869,6 +869,11 @@ weather_data_t get_history_chunk(struct usb_dev_handle *h, weather_settings_t *w
 	return d;
 }
 
+int has_lost_contact_with_sensor(weather_data_t *wdp)
+{
+	return ((wdp->status >> 7) & 0x1);
+}
+
 float convert_avg_windspeed(weather_data_t *wdp)
 {
 	return (((wdp->wind_highbyte & 0xf) << 8) | (wdp->gust_wind_lowbyte & 0xff)) * 0.1f;
@@ -1047,8 +1052,26 @@ void print_history_item_formatstring(weather_settings_t *ws, weather_item_t *his
 				case 'F': printf("%0.1f", calculate_rain_24h(history, history_count, index) / 24.0f); break; // rain 24h mm.
 				case 'f': printf("%0.1f", calculate_rain_24h(history, history_count, index)); break; // rain 24h mm/h.
 				case 'N': printf("%s", get_timestamp(history[index].timestamp)); break; // Date.
+				case 'e': printf("%s", has_lost_contact_with_sensor(wd) ? "True" : "False"); break; // Lost contact with sensor? True or False.
+				case 'E': printf("%d", has_lost_contact_with_sensor(wd)); break; // Lost contact with sensor? 1 or 0.
 				case '%': printf("%%"); break;
-				default: break;
+				case 'b':
+				{
+					int i;
+					for (i = 0; i < 16; i++)
+					{
+						printf("%02X ", wd->raw_data[i]);
+					}
+					break;
+				}
+				default:
+				{
+					int c = (s - format_str);
+					fprintf(stderr, "Incorrect format string at character %d, %%%c is not a valid variable.\n", c, *s);
+					printf("\n");
+					exit(1);
+					break;
+				}
 			}
 		}
 		else if (*s == '\\')
@@ -1288,10 +1311,13 @@ void print_summary(weather_settings_t *ws, weather_item_t *item)
 	printf("  Dewpoint:\t\t%2.1f C\n",			calculate_dewpoint(wd));
 	printf("  Humidity:\t\t%u%%\n",				wd->out_humidity);
 	printf("  Abs pressure:\t\t%4.1f hPa\n",	wd->abs_pressure * 0.1f);
+	printf("  Rel pressure:\t\t%4.1f hPa\n",	calculate_rel_pressure(wd));
 	printf("  Average windspeed:\t%2.1f m/s\n",	convert_avg_windspeed(wd));
 	printf("  Gust windspeed:\t%2.1f m/s\n",	convert_gust_windspeed(wd));
-	printf("  Wind direction:\t%2.1f %s\n",		wd->wind_direction * 22.5f, get_wind_direction(wd->wind_direction));
+	printf("  Wind direction:\t%2.0f %s\n",		wd->wind_direction * 22.5f, get_wind_direction(wd->wind_direction));
 	printf("  Total rain:\t\t%2.1f mm\n",		wd->total_rain * 0.3f);
+	if (has_lost_contact_with_sensor(wd))
+		printf("  NO CONTACT WITH SENSOR\n");
 	printf("\n");
 }
 
@@ -1590,7 +1616,14 @@ int main(int argc, char **argv)
 		printf("%%F - Rain 24h (mm).\n");
 		printf("%%R - Total rain (mm).\n");
 		printf("%%N - Date/time string for the weather reading.\n");
-		
+		printf("%%e - Have we lost contact with the sensor for this reading? (True/False).\n");
+		printf("%%E - Have we lost contact with the sensor for this reading? (1/0).\n");
+		printf("%%b - Original bytes in hex format containing the data.\n");
+		printf("%%%% - %% sign\n");
+		printf("\\n - Newline.\n");
+		printf("\\t - Tab.\n");
+		printf("\\r - Carriage return.\n");
+
 		return 0;
 	}
 	
