@@ -1,28 +1,28 @@
 //
 // Weather Station Poller
-// 
+//
 // Copyright (C) 2010 Joakim Söderberg
 //
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
-// 
+//
 // This program is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
-// 
+//
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 //
-// ------------------------------------------------------------------------ 
+// ------------------------------------------------------------------------
 //
 // This program is designed to interface with the Fineoffset line
 // of weather stations (WP1400, WH1080, WH1081, W-8681, etc).
 //
 // The information about how the data is stored on the device is
-// based on information from Jim Easterbrooks webpage 
+// based on information from Jim Easterbrooks webpage
 // (http://www.jim-easterbrook.me.uk/weather/mm/)
 // including the EasyWeather.dat layout
 // (http://www.jim-easterbrook.me.uk/weather/ew/).
@@ -38,6 +38,8 @@
 #include <time.h>
 #include <math.h>
 #include <getopt.h>
+
+#define max(a, b) ((a)>(b) ? (a) : (b))
 
 #define MAJOR_VERSION 1
 #define MINOR_VERSION 0
@@ -58,7 +60,17 @@
 #define LOST_SENSOR_CONTACT_BIT 6
 #define RAIN_COUNTER_OVERFLOW_BIT 7
 
+// The weather station stores signed shorts in a non-standard way.
+// Instead of two's compliment, sign-magnitude is used (8-bit is sign).
+// http://en.wikipedia.org/wiki/Signed_number_representations
+#define MSB(v) 				(((v) >> 8) & 0xff)		// Most significant byte of short.
+#define SIGN_BIT(v) 		(MSB(v) >> 7)			// Least Significant bit is sign bit.
+#define MAGNITUDE_BITS(v) 	((v) & 0x7fff)
+#define FIX_SIGN(v) 		((SIGN_BIT(v) ? -1 : 1) * MAGNITUDE_BITS(v))
+
 #define PRINT_DEBUG(str) { if (debug) printf("DEBUG: "str); }
+
+#define TEMP_VALID(t) ((t) != (0xffff ^ 0x7fff))
 
 typedef unsigned char byte;
 
@@ -68,7 +80,7 @@ int debug = 0;
 int svn_revision()
 {
 	char *s = BUILD_NUM;
-	
+
 	while (*s)
 	{
 		if (*s == ':')
@@ -76,10 +88,10 @@ int svn_revision()
 			s++;
 			return atoi(s);
 		}
-		
+
 		s++;
 	}
-	
+
 	return 0;
 }
 
@@ -119,24 +131,24 @@ static program_settings_t program_settings;
 //
 // Based on http://www.jim-easterbrook.me.uk/weather/mm/
 //
-typedef struct weather_settings_s 
+typedef struct weather_settings_s
 {
 	char			magic_number[2];
 	unsigned char	read_period;		// Minutes between each stored reading.
-	
+
 	unsigned char	unit_settings1;		// bit 0: indoor temperature: 0 = °C, 1 = °F
 										// bit 1: outdoor temperature: 0 = °C, 1 = °F
 										// bit 2: rain: 0 = mm, 1 = inch
 										// bit 5: pressure: 1 = hPa
 										// bit 6: pressure: 1 = inHg
 										// bit 7: pressure: 1 = mmHg
-	
+
 	unsigned char	unit_settings2;		// bit 0: wind speed: 1 = m/s
 										// bit 1: wind speed: 1 = km/h
 										// bit 2: wind speed: 1 = knot
 										// bit 3: wind speed: 1 = m/h
 										// bit 4: wind speed: 1 = bft
-	
+
 	unsigned char	display_options1;	// bit 0: pressure: 0 = absolute, 1 = relative
 										// bit 1: wind speed: 0 = average, 1 = gust
 										// bit 2: time: 0 = 24 hour, 1 = 12 hour
@@ -145,7 +157,7 @@ typedef struct weather_settings_s
 										// bit 5: date: 1 = show year year
 										// bit 6: date: 1 = show day name
 										// bit 7: date: 1 = alarm time
-	
+
 	unsigned char	display_options2;	// bit 0: outdoor temperature: 1 = temperature
 										// bit 1: outdoor temperature: 1 = wind chill
 										// bit 2: outdoor temperature: 1 = dew point
@@ -154,14 +166,14 @@ typedef struct weather_settings_s
 										// bit 5: rain: 1 = week
 										// bit 6: rain: 1 = month
 										// bit 7: rain: 1 = total
-										
+
 	unsigned char	alarm_enable1;		// bit 1: time
 										// bit 2: wind direction
 										// bit 4: indoor humidity low
 										// bit 5: indoor humidity high
 										// bit 6: outdoor humidity low
 										// bit 7: outdoor humidity high
-	
+
 	unsigned char	alarm_enable2;		// bit 0: wind average
 										// bit 1: wind gust
 										// bit 2: rain hourly
@@ -170,7 +182,7 @@ typedef struct weather_settings_s
 										// bit 5: absolute pressure high
 										// bit 6: relative pressure low
 										// bit 7: relative pressure high
-										
+
 	unsigned char	alarm_enable3;		// bit 0: indoor temperature low
 										// bit 1: indoor temperature high
 										// bit 2: outdoor temperature low
@@ -179,20 +191,20 @@ typedef struct weather_settings_s
 										// bit 5: wind chill high
 										// bit 6: dew point low
 										// bit 7: dew point high
-	
+
 	char timezone;						// Hours offset from Central European Time, so in the UK this should be set to -1.
 										// In stations without a radio controlled clock this is always zero.
-	
+
 	char data_refreshed;				// Computer writes 0xAA to indicate a change of settings. Weather station clears value to acknowledge.
 	unsigned short data_count;			// Number of stored readings. Starts at zero, rises to 4080.
-	
-	unsigned short current_pos;			// Address of the stored reading currently being created. 
+
+	unsigned short current_pos;			// Address of the stored reading currently being created.
 										// Starts at 256, rises to 65520 in steps of 16, then loops
 										// back to 256. The data at this address is updated every 48 seconds or so,
-										// until the read period is reached. Then the address is incremented and 
-										// the next record becomes current. 
+										// until the read period is reached. Then the address is incremented and
+										// the next record becomes current.
 										// Substract 256 and divide by 16 to get the number of saved history entries.
-	
+
 	unsigned short relative_pressure;	// Current relative (sea level) atmospheric pressure, multiply by 0.1 to get hPa.
 	unsigned short absolute_pressure;	// Current absolute atmospheric pressure, multiply by 0.1 to get hPa.
 	unsigned char unknown[7];			// Usually all zero, but have also seen 0x4A7600F724030E. If you have something different, let me know!
@@ -202,7 +214,7 @@ typedef struct weather_settings_s
 	short alarm_intemp_high;			// alarm, indoor temperature, high. Multiply by 0.1 to get °C.
 	short alarm_intemp_low;				// alarm, indoor temperature, low. Multiply by 0.1 to get °C.
 	unsigned char alarm_outhumid_high;	// alarm, outdoor humidity, high.
-	unsigned char alarm_outhumid_low;	// alarm, outdoor humidity, low	
+	unsigned char alarm_outhumid_low;	// alarm, outdoor humidity, low
 	short alarm_outtemp_high;			// alarm, outdoor temperature, high. Multiply by 0.1 to get °C.
 	short alarm_outtemp_low;			// alarm, outdoor temperature, low. Multiply by 0.1 to get °C.
 	short alarm_windchill_high;			// alarm, wind chill, high. Multiply by 0.1 to get °C.
@@ -280,10 +292,10 @@ typedef struct weather_data_s
 	unsigned char avg_wind_lowbyte;	// Average wind speed, low bits. Multiply by 0.1 to get m/s. (I've read elsewhere that the factor is 0.38. I don't know if this is correct.)
 	unsigned char gust_wind_lowbyte;// Gust wind speed, low bits. Multiply by 0.1 to get m/s. (I've read elsewhere that the factor is 0.38. I don't know if this is correct.)
 	unsigned char wind_highbyte;	// Wind speed, high bits. Lower 4 bits are the average wind speed high bits, upper 4 bits are the gust wind speed high bits.
-	unsigned char wind_direction;	// Multiply by 22.5 to get ° from north.
+	unsigned char wind_direction;	// Multiply by 22.5 to get ° from north. If bit 7 is 1, no valid wind direction.
 	unsigned short total_rain;		// Total rain. Multiply by 0.3 to get mm.
-	unsigned char status;			// Bits. 
-									// 7th bit (i.e. bit 6, 64) indicates loss of contact with sensors. 
+	unsigned char status;			// Bits.
+									// 7th bit (i.e. bit 6, 64) indicates loss of contact with sensors.
 									// 8th bit (i.e. bit 7, 128) indicates rain counter overflow.
 	unsigned char raw_data[16];
 } weather_data_t;
@@ -351,10 +363,10 @@ struct usb_device *find_device(int vendor, int product)
 {
     struct usb_bus *bus;
 	struct usb_device *dev;
-    
-    for (bus = usb_get_busses(); bus; bus = bus->next) 
-	{		
-		for (dev = bus->devices; dev; dev = dev->next) 
+
+    for (bus = usb_get_busses(); bus; bus = bus->next)
+	{
+		for (dev = bus->devices; dev; dev = dev->next)
 		{
 			if (dev->descriptor.idVendor == vendor
 			&& dev->descriptor.idProduct == product)
@@ -372,20 +384,20 @@ struct usb_device *find_device(int vendor, int product)
 void close_device(struct usb_dev_handle *h)
 {
 	int ret = usb_release_interface(h, 0);
-	
-	if (ret != 0) 
+
+	if (ret != 0)
 		fprintf(stderr, "Could not release interface: %d\n", ret);
-    
+
 	ret = usb_close(h);
-    
-	if (ret != 0) 
+
+	if (ret != 0)
 		fprintf(stderr, "Error closing interface: %d\n", ret);
 }
 
 //
 // Handles SIGTERM.
 //
-void sigterm_handler(int signum) 
+void sigterm_handler(int signum)
 {
 	fprintf(stderr, "SIGTERM: Closing device\n");
 	close_device(devh);
@@ -395,7 +407,7 @@ void sigterm_handler(int signum)
 //
 // Opens the USB device.
 //
-struct usb_dev_handle *open_device() 
+struct usb_dev_handle *open_device()
 {
 	int ret;
 	struct usb_dev_handle *h;
@@ -405,69 +417,69 @@ struct usb_dev_handle *open_device()
     usb_init();
     usb_find_busses();
     usb_find_devices();
-	
+
     dev = find_device(program_settings.vendor_id, program_settings.product_id);
-	
+
 	if (!dev)
 	{
-		fprintf(stderr, "No device with vendor id: 0x%x (%d) and product id: %x (%d) was found\n", 
-			program_settings.vendor_id, program_settings.vendor_id, 
+		fprintf(stderr, "No device with vendor id: 0x%x (%d) and product id: %x (%d) was found\n",
+			program_settings.vendor_id, program_settings.vendor_id,
 			program_settings.product_id, program_settings.product_id);
 		exit(1);
 	}
-	
+
     h = usb_open(dev);
     assert(h);
     signal(SIGTERM, sigterm_handler);
     ret = usb_get_driver_np(h, 0, buf, sizeof(buf));
 
-    if (ret == 0) 
+    if (ret == 0)
 	{
 		//fprintf(stderr, "Interface 0 already claimed by driver \"%s\", attempting to detach it.\n", buf);
 		ret = usb_detach_kernel_driver_np(h, 0);
 		//printf("usb_detach_kernel_driver_np returned %d\n", ret);
     }
-	
+
     ret = usb_claim_interface(h, 0);
 
-    if (ret != 0) 
+    if (ret != 0)
 	{
 		fprintf(stderr, "Could not open usb device, errorcode - %d\n", ret);
 		exit(1);
     }
-	
+
     ret = usb_set_altinterface(h, 0);
-	
+
 	if (!h || ret != 0)
 	{
 		fprintf(stderr, "Failed to open USB device, errorcode - %d\n", ret);
 		exit(1);
 	}
-	
+
 	return h;
 }
 
 //
 // Inits the USB descriptors.
 //
-void init_device_descriptors() 
-{	
+void init_device_descriptors()
+{
 	char buf[1024];
 	int ret = 0;
-	
+
 	ret = usb_get_descriptor(devh, USB_DT_DEVICE, 0, buf, sizeof(buf));
 	ret = usb_get_descriptor(devh, USB_DT_CONFIG, 0, buf, sizeof(buf));
 	ret = usb_release_interface(devh, 0);
 
 	if (ret != 0)
 		fprintf(stderr, "Failed to release interface before set_configuration: %d\n", ret);
-	
+
 	ret = usb_set_configuration(devh, 1);
 	ret = usb_claim_interface(devh, 0);
-	
-	if (ret != 0) 
+
+	if (ret != 0)
 		fprintf(stderr, "Claim after set_configuration failed with error %d\n", ret);
-	
+
 	ret = usb_set_altinterface(devh, 0);
 	ret = usb_control_msg(devh, USB_TYPE_CLASS + USB_RECIP_INTERFACE, 0xa, 0, 0, NULL, 0, USB_TIMEOUT);
 	ret = usb_get_descriptor(devh, USB_DT_REPORT, 0, buf, sizeof(buf));
@@ -476,18 +488,18 @@ void init_device_descriptors()
 //
 // Prints bytes for debug purposes.
 //
-void print_bytes(char *bytes, unsigned int len) 
+void print_bytes(char *bytes, unsigned int len)
 {
-    if ((program_settings.debug >= 2) && (len > 0)) 
+    if ((program_settings.debug >= 2) && (len > 0))
 	{
 		int i;
-		
-		for (i=0; i < len; i++) 
+
+		for (i=0; i < len; i++)
 		{
 			printf("%02x ", (int)((unsigned char)bytes[i]));
 		}
     }
-	
+
 	printf("\n");
 }
 
@@ -497,13 +509,13 @@ void print_bytes(char *bytes, unsigned int len)
 void send_usb_msgbuf(struct usb_dev_handle *h, char *msg, int msgsize)
 {
 	int bytes_written = 0;
-	
-	if (debug >= 2) 
+
+	if (debug >= 2)
 	{
 		printf("--> ");
 		print_bytes(msg, msgsize);
 	}
-	
+
 	bytes_written = usb_control_msg(h, USB_TYPE_CLASS + USB_RECIP_INTERFACE,
 									9, 0x200, 0, msg, msgsize, USB_TIMEOUT);
 	assert(bytes_written == msgsize);
@@ -523,12 +535,12 @@ void send_usb_msg8(struct usb_dev_handle *h, char b1, char b2, char b3, char b4,
 	buf[5] = b6;
 	buf[6] = b7;
 	buf[7] = b8;
-	
+
 	send_usb_msgbuf(h, buf, sizeof(buf));
 }
 
 //
-// The weather station wants 8 byte control messages. 
+// The weather station wants 8 byte control messages.
 // Only 4 bytes are relevant and are repeated twice for each message.
 //
 void send_weather_msg(struct usb_dev_handle *h, char b1, char b2, char b3, char b4)
@@ -610,24 +622,32 @@ void print_bcd_date(unsigned char date[5])
 	printf("%u-%02u-%02u %02u:%02u:00", d.year, d.month, d.day, d.hour, d.minute);
 }
 
+const char *get_bcd_date_string(unsigned char date[5])
+{
+	static char str[1024];
+	bcd_date_t d = parse_bcd_date(date);
+	sprintf(str, "%u-%02u-%02u %02u:%02u:00", d.year, d.month, d.day, d.hour, d.minute);
+	return str;
+}
+
 //
 // Gets the raw bytes of the weather settings block.
 //
 void get_settings_block_raw(struct usb_dev_handle *h, char *buf, unsigned int len)
 {
 	unsigned int offset;
-	
+
 	assert(len <= WEATHER_SETTINGS_CHUNK_SIZE);
 	assert((len % 32) == 0);
-	
+
 	memset(buf, 0, len);
-	
+
 	// Read 256 bytes in 32-byte chunks.
 	for (offset = 0; (offset < WEATHER_SETTINGS_CHUNK_SIZE) && (offset < len); offset += 32)
 	{
 		send_weather_msg(h, 0xa1, 0x00, offset, 0x20);
 		read_weather_msg(h, &buf[offset]);
-		
+
 		if (debug >= 2)
 		{
 			print_bytes(&buf[offset], 32);
@@ -642,11 +662,11 @@ weather_settings_t get_settings_block(struct usb_dev_handle *h)
 {
 	weather_settings_t ws;
 	char buf[WEATHER_SETTINGS_CHUNK_SIZE];
-	
+
 	memset(&ws, 0, sizeof(ws));
 
 	get_settings_block_raw(h, buf, sizeof(buf));
-	
+
 	ws.magic_number[0]				= buf[0];
 	ws.magic_number[1]				= buf[1];
 	ws.read_period					= buf[16];
@@ -667,16 +687,16 @@ weather_settings_t get_settings_block(struct usb_dev_handle *h)
 	memcpy(&ws.datetime, &buf[43], 5);
 	ws.alarm_inhumid_high			= buf[48];
 	ws.alarm_inhumid_low			= buf[49];
-	ws.alarm_intemp_high			= (buf[50] & 0xff) | (buf[51] << 8);
-	ws.alarm_intemp_low				= (buf[52] & 0xff) | (buf[53] << 8);
+	ws.alarm_intemp_high			= FIX_SIGN((buf[50] & 0xff) | (buf[51] << 8));
+	ws.alarm_intemp_low				= FIX_SIGN((buf[52] & 0xff) | (buf[53] << 8));
 	ws.alarm_outhumid_high			= buf[54];
 	ws.alarm_outhumid_low			= buf[55];
-	ws.alarm_outtemp_high			= (buf[56] & 0xff) | (buf[57] << 8);
-	ws.alarm_outtemp_low			= (buf[58] & 0xff) | (buf[59] << 8);
-	ws.alarm_windchill_high			= (buf[60] & 0xff) | (buf[61] << 8);
-	ws.alarm_windchill_low			= (buf[62] & 0xff) | (buf[63] << 8);
-	ws.alarm_dewpoint_high			= (buf[64] & 0xff) | (buf[65] << 8);
-	ws.alarm_dewpoint_low			= (buf[66] & 0xff) | (buf[67] << 8);
+	ws.alarm_outtemp_high			= FIX_SIGN((buf[56] & 0xff) | (buf[57] << 8));
+	ws.alarm_outtemp_low			= FIX_SIGN((buf[58] & 0xff) | (buf[59] << 8));
+	ws.alarm_windchill_high			= FIX_SIGN((buf[60] & 0xff) | (buf[61] << 8));
+	ws.alarm_windchill_low			= FIX_SIGN((buf[62] & 0xff) | (buf[63] << 8));
+	ws.alarm_dewpoint_high			= FIX_SIGN((buf[64] & 0xff) | (buf[65] << 8));
+	ws.alarm_dewpoint_low			= FIX_SIGN((buf[66] & 0xff) | (buf[67] << 8));
 	ws.alarm_abs_pressure_high		= (buf[68] & 0xff) | (buf[69] << 8);
 	ws.alarm_abs_pressure_low		= (buf[70] & 0xff) | (buf[71] << 8);
 	ws.alarm_rel_pressure_high		= (buf[72] & 0xff) | (buf[73] << 8);
@@ -693,14 +713,14 @@ weather_settings_t get_settings_block(struct usb_dev_handle *h)
 	ws.min_inhumid					= buf[99];
 	ws.max_outhumid					= buf[100];
 	ws.min_outhumid					= buf[101];
-	ws.max_intemp					= (buf[102] & 0xff) | (buf[103] << 8);
-	ws.min_intemp					= (buf[104] & 0xff) | (buf[105] << 8);
-	ws.max_outtemp					= (buf[106] & 0xff) | (buf[107] << 8);
-	ws.min_outtemp					= (buf[108] & 0xff) | (buf[109] << 8);
-	ws.max_windchill				= (buf[110] & 0xff) | (buf[111] << 8);
-	ws.min_windchill				= (buf[112] & 0xff) | (buf[113] << 8);
-	ws.max_dewpoint					= (buf[114] & 0xff) | (buf[115] << 8);
-	ws.min_dewpoint					= (buf[116] & 0xff) | (buf[117] << 8);
+	ws.max_intemp					= FIX_SIGN((buf[102] & 0xff) | (buf[103] << 8));
+	ws.min_intemp					= FIX_SIGN((buf[104] & 0xff) | (buf[105] << 8));
+	ws.max_outtemp					= FIX_SIGN((buf[106] & 0xff) | (buf[107] << 8));
+	ws.min_outtemp					= FIX_SIGN((buf[108] & 0xff) | (buf[109] << 8));
+	ws.max_windchill				= FIX_SIGN((buf[110] & 0xff) | (buf[111] << 8));
+	ws.min_windchill				= FIX_SIGN((buf[112] & 0xff) | (buf[113] << 8));
+	ws.max_dewpoint					= FIX_SIGN((buf[114] & 0xff) | (buf[115] << 8));
+	ws.min_dewpoint					= FIX_SIGN((buf[116] & 0xff) | (buf[117] << 8));
 	ws.max_abs_pressure				= (buf[118] & 0xff) | (buf[119] << 8);
 	ws.min_abs_pressure				= (buf[120] & 0xff) | (buf[121] << 8);
 	ws.max_rel_pressure				= (buf[122] & 0xff) | (buf[123] << 8);
@@ -735,7 +755,7 @@ weather_settings_t get_settings_block(struct usb_dev_handle *h)
 	memcpy(&ws.max_rain_weekly_date, &buf[241], sizeof(ws.max_rain_weekly_date));
 	memcpy(&ws.max_rain_monthly_date, &buf[246], sizeof(ws.max_rain_monthly_date));
 	memcpy(&ws.max_rain_total_date, &buf[251], sizeof(ws.max_rain_total_date));
-	
+
 	return ws;
 }
 
@@ -746,22 +766,22 @@ int read_weather_ack(struct usb_dev_handle *h)
 {
 	unsigned int i;
 	char buf[8];
-	
+
 	read_weather_msg(h, buf);
-	
+
 	// The ack should consist of just 0xa5.
 	for (i = 0; i < 8; i++)
 	{
 		if (debug >= 2)
 			printf("%x ", (buf[i] & 0xff));
-		
+
 		if ((buf[i] & 0xff) != 0xa5)
 			return -1;
 	}
-	
-	if (debug >= 2) 
+
+	if (debug >= 2)
 		printf("\n");
-	
+
 	return 0;
 }
 
@@ -798,8 +818,8 @@ int set_weather_setting(struct usb_dev_handle *h, unsigned int offset, char *dat
 			return -1;
 		}
 	}
-	
-	notify_weather_setting_change(h);	
+
+	notify_weather_setting_change(h);
 	return 0;
 }
 
@@ -809,34 +829,34 @@ int set_weather_settings_bulk(struct usb_dev_handle *h, unsigned int change_offs
 	unsigned offset;
 	unsigned int i;
 	char buf[WEATHER_SETTINGS_CHUNK_SIZE];
-	
+
 	// Make sure we're not trying to write outside the settings buffer.
 	assert((change_offset + len) < WEATHER_SETTINGS_CHUNK_SIZE);
-	
+
 	get_settings_block_raw(h, buf, sizeof(buf));
-	
+
 	// Change the settings.
 	memcpy(&buf[change_offset], data, len);
-	
+
 	// Send back the settings in 3 32-bit chunks.
 	for (offset = 0; offset < (32 * 3); offset += 32)
 	{
 		send_weather_msg(h, 0xa0, 0x00, offset, 0x20);
-		
+
 		// Send 4 * 8 bytes.
 		for (i = offset; i < (offset + (4 * 8)); i += 8)
 		{
 			send_usb_msgbuf(h, &buf[i], 8);
 		}
-		
+
 		if (read_weather_ack(h) != 0)
-		{	
+		{
 			return -1;
 		}
 	}
-	
+
 	notify_weather_setting_change(h);
-	
+
 	return 0;
 }
 
@@ -855,36 +875,55 @@ int set_delay(struct usb_dev_handle *h, unsigned char delay)
 //
 weather_data_t get_history_chunk(struct usb_dev_handle *h, weather_settings_t *ws, unsigned short history_pos)
 {
-	char buf[32];
+	static unsigned short prev_history_pos = -1;
+	static char buf[32];
+	char *b;
 	unsigned short high_pos = (history_pos >> 8) & 0xff;
 	unsigned short low_pos = (history_pos & 0xff);
 	weather_data_t d;
-	
-	// The memory address we want to read from is sent.
-	send_weather_msg(h, 0xa1, high_pos, low_pos, 0x20);
-	read_weather_msg(h, buf);
-	
-	if (debug >= 2)
+
+	// When we fetch a new item from the history, we fetch 32 bytes of data
+	// but we're only interested in the first 16 bytes each time.
+	// If we're fetching the next 16 bytes, just read the next 16 bytes
+	// from the previous buffer.
+	if (history_pos == (prev_history_pos + HISTORY_CHUNK_SIZE))
 	{
-		print_bytes(buf, 32);
+		b = buf + HISTORY_CHUNK_SIZE;
+		//fprintf(stderr, ".");
+	}
+	else
+	{
+		// The memory address we want to read from is sent.
+		send_weather_msg(h, 0xa1, high_pos, low_pos, 0x20);
+		read_weather_msg(h, buf);
+
+		if (debug >= 2)
+		{
+			print_bytes(buf, 32);
+		}
+
+		b = buf;
+		//fprintf(stderr, " %u ", history_pos);
 	}
 
 	memset(&d, 0, sizeof(d));
-	
-	d.delay  			= buf[0];
-	d.in_humidity	 	= buf[1];
-	d.in_temp 			= (buf[2] & 0xff) | (buf[3] << 8);
-	d.out_humidity		= buf[4];
-	d.out_temp			= (buf[5] & 0xff) | (buf[6] << 8);
-	d.abs_pressure		= (buf[7] & 0xff) | (buf[8] << 8);
-	d.avg_wind_lowbyte	= buf[9];
-	d.gust_wind_lowbyte = buf[10];
-	d.wind_highbyte		= buf[11];
-	d.wind_direction	= buf[12];
-	d.total_rain		= (buf[13] & 0xff) | (buf[14] << 8);
-	d.status			= buf[15];
-	
-	memcpy(&d.raw_data, buf, sizeof(d.raw_data));
+
+	d.delay  			= b[0];
+	d.in_humidity	 	= b[1];
+	d.in_temp 			= FIX_SIGN((b[2] & 0xff) | (b[3] << 8));
+	d.out_humidity		= b[4];
+	d.out_temp			= FIX_SIGN((b[5] & 0xff) | (b[6] << 8));
+	d.abs_pressure		= (b[7] & 0xff) | (b[8] << 8);
+	d.avg_wind_lowbyte	= b[9];
+	d.gust_wind_lowbyte = b[10];
+	d.wind_highbyte		= b[11];
+	d.wind_direction	= b[12];
+	d.total_rain		= (b[13] & 0xff) | (b[14] << 8);
+	d.status			= b[15];
+
+	memcpy(&d.raw_data, b, sizeof(d.raw_data));
+
+	prev_history_pos = history_pos;
 
 	return d;
 }
@@ -908,7 +947,7 @@ time_t bcd_to_unix_date(bcd_date_t date)
 {
 	time_t rawtime;
 	struct tm timeinfo;
-	
+
 	memset(&timeinfo, 0, sizeof(timeinfo));
 	timeinfo.tm_year	= date.year - 1900;
 	timeinfo.tm_mon		= date.month - 1;
@@ -916,9 +955,9 @@ time_t bcd_to_unix_date(bcd_date_t date)
 	timeinfo.tm_hour	= date.hour;
 	timeinfo.tm_min		= date.minute;
 	timeinfo.tm_isdst	= 1;
-	
+
 	rawtime = mktime(&timeinfo);
-	
+
 	return rawtime;
 }
 
@@ -949,7 +988,7 @@ float calculate_dewpoint(weather_data_t *wd)
 
 //
 // Court's formula for Heat Loss.
-// 
+//
 float calculate_windchill(weather_data_t *wd)
 {
 	float wc;
@@ -964,7 +1003,7 @@ float calculate_windchill(weather_data_t *wd)
 	{
 		wc = t;
 	}
-	
+
 	return wc;
 }
 
@@ -985,65 +1024,127 @@ float calculate_rel_pressure(weather_data_t *wd)
 //
 // Gets the closest history item to the amount of seconds either forward or backwards in time from the given index.
 //
-weather_item_t *get_history_item_seconds_delta(weather_item_t *history, unsigned int history_count, unsigned int index, int seconds_delta)
+weather_item_t *get_history_item_seconds_delta(weather_settings_t *ws, weather_item_t *history, unsigned int index, int seconds_delta)
 {
 	unsigned int i;
 	int seconds = 0;
 	int delay_seconds = 0;
-	int direction = (seconds <= 0) ? -1 : 1;
 
-	// Go through enough previous (or future) history items relative to the current index
-	// until we find the closest item which is "seconds_delta" seconds from the current history item.
-	for (i = (index + direction); (i > 0) && (i < history_count); i += direction)
+	if (program_settings.quickrain)
 	{
-		// We don't have enough history items to go any further.
-		if (history[i].timestamp == 0)
-			break;
+		// This is meant for when a small number of items are read, but we still
+		// want accurate weather data.
+		//
+		// We cheat and assume that the delay between each item has always
+		// been weather_settings_t.read_period instead of checking the time between
+		// each history item. This might be inaccurate.
 
-		delay_seconds = (history[i].data.delay * 60);
-		seconds += delay_seconds;
-		
-		if (seconds >= abs(seconds_delta))
+		// The number of items we need to go back to go seconds_delta seconds into the past.
+		int index_delta = (seconds_delta / (ws->read_period * 60));
+		//time_t station_date = bcd_to_unix_date(parse_bcd_date(ws->datetime));
+
+		assert(abs(index_delta) < ws->data_count);
+
+		i = index + index_delta;
+
+		// If we're outside the range of available items we'll
+		// just return the current item instead, so we don't get
+		// inaccurate data (like calculating over 5 hours when we
+		// were asked for 24h).
+		if (i < (HISTORY_MAX - ws->data_count))
+		{
+			return &history[index];
+		}
+
+		// Fetch the data if it doesn't already exist in the history.
+		if ((history[i].timestamp == 0))
+		{
+			int new_address;
+			int new_index;
+			unsigned int history_begin = (ws->current_pos + HISTORY_CHUNK_SIZE);
+
+			new_index = history[index].history_index + index_delta;
+			new_address = HISTORY_START + (new_index * HISTORY_CHUNK_SIZE);
+
+			// Read history chunk.
+			history[i].history_index = new_index;
+			history[i].address = new_address;
+			history[i].data = get_history_chunk(devh, ws, new_address);
+			history[i].timestamp = (time_t)(history[index].timestamp + seconds_delta);
+			
 			return &history[i];
+		}
+
+		return &history[i];
 	}
-	
-	return &history[i];
+	else
+	{
+		// Go through enough previous (or future) history items relative to the current index
+		// until we find the closest item which is "seconds_delta" seconds from the current history item.
+		for (i = (index - 1); (i > (HISTORY_MAX - ws->data_count)) && (i < HISTORY_MAX); i--)
+		{
+			// We don't have enough history items to go any further.
+			if (history[i].timestamp == 0)
+				return &history[i-1];
+
+			// TODO: if (has_lost_contact_with_sensor(&history[i].data)) ...
+			delay_seconds = (history[i].data.delay * 60);
+			seconds += delay_seconds;
+
+			if (seconds >= abs(seconds_delta))
+				return &history[i];
+		}
+
+		return &history[i];
+	}
+
+	// If everything failed, just return the current item.
+	return &history[index];
 }
 
 //
 // Calculates the rain since x hours ago.
 //
-float calculate_rain_hours_ago(weather_item_t *history, unsigned int history_count, unsigned int index, unsigned int hours_ago)
+float calculate_rain_hours_ago(weather_settings_t *ws, weather_item_t *history, unsigned int index, unsigned int hours_ago)
 {
+	int seconds_to_go_back	= hours_ago * 60 * 60;
 	weather_item_t *cur		= &history[index];
-	weather_item_t *prev	= get_history_item_seconds_delta(history, history_count, index, hours_ago * 60 * 60);
+	weather_item_t *prev	= get_history_item_seconds_delta(ws, history, index, -seconds_to_go_back);
 	float total_rain 		= cur->data.total_rain * 0.3f;
 	float prev_total_rain	= prev->data.total_rain * 0.3f;
+
+	if ((prev->timestamp == 0))
+	|| (abs(cur->timestamp - prev->timestamp) < seconds_to_go_back))
+	{
+		return 0.0;
+	}
 	
-	return (total_rain - prev_total_rain) * 0.3f;
+	//printf("< %0.1f - %0.1f = %0.1f >", total_rain, prev_total_rain, (total_rain - prev_total_rain));
+
+	return (total_rain - prev_total_rain);
 }
 
-float calculate_rain_1h(weather_item_t *history, unsigned int history_count, unsigned int index)
+float calculate_rain_1h(weather_settings_t *ws, weather_item_t *history, unsigned int index)
 {
-	return calculate_rain_hours_ago(history, history_count, index, 1);
+	return calculate_rain_hours_ago(ws, history, index, 1);
 }
 
-float calculate_rain_24h(weather_item_t *history, unsigned int history_count, unsigned int index)
+float calculate_rain_24h(weather_settings_t *ws, weather_item_t *history, unsigned int index)
 {
-	return calculate_rain_hours_ago(history, history_count, index, 24);
+	return calculate_rain_hours_ago(ws, history, index, 24);
 }
 
 void print_history_item_formatstring(weather_settings_t *ws, weather_item_t *history, unsigned int index, char *format_str)
 {
 	weather_data_t *wd = &history[index].data;
 	char *s = format_str;
-	
+
 	while (*s)
 	{
 		if (*s == '%')
 		{
 			s++;
-			
+
 			switch (*s)
 			{
 				case 'i': printf("%u", history[index].history_index); break; // History item index.
@@ -1060,12 +1161,13 @@ void print_history_item_formatstring(weather_settings_t *ws, weather_item_t *his
 				case 'P': printf("%0.1f", wd->abs_pressure * 0.1f); break; // Absolute pressure.
 				case 'p': printf("%0.1f", calculate_rel_pressure(wd)); break; // Relative pressure.
 				case 'R': printf("%0.1f", wd->total_rain * 0.3f); 	break; // Total rain.
-				case 'r': printf("%0.1f", calculate_rain_1h(history, ws->data_count, index)); break; // Rain 1h mm/h.
-				case 'F': printf("%0.1f", calculate_rain_24h(history, ws->data_count, index) / 24.0f); break; // rain 24h mm.
-				case 'f': printf("%0.1f", calculate_rain_24h(history, ws->data_count, index)); break; // rain 24h mm/h.
+				case 'r': printf("%0.1f", calculate_rain_1h(ws, history, index)); break; // Rain 1h mm/h.
+				case 'F': printf("%0.1f", calculate_rain_24h(ws, history, index) / 24.0f); break; // rain 24h mm.
+				case 'f': printf("%0.1f", calculate_rain_24h(ws, history, index)); break; // rain 24h mm/h.
 				case 'N': printf("%s", get_timestamp(history[index].timestamp)); break; // Date.
 				case 'e': printf("%s", has_lost_contact_with_sensor(wd) ? "True" : "False"); break; // Lost contact with sensor? True or False.
 				case 'E': printf("%d", has_lost_contact_with_sensor(wd)); break; // Lost contact with sensor? 1 or 0.
+				case 'a': printf("%04x", history[index].address); break; // History address.
 				case '%': printf("%%"); break;
 				case 'b':
 				{
@@ -1102,19 +1204,19 @@ void print_history_item_formatstring(weather_settings_t *ws, weather_item_t *his
 		{
 			printf("%c", *s);
 		}
-		
+
 		s++;
 	}
 }
 
-//   1, 2010-09-13 13:41:34, 2010-08-13 14:46:53,  30,   53,  26.1,   55,  25.2,  15.5,  24.1,  1019.3,  1013.3,  3.1,   2,  5.8,   4,  10,  SW, 		   34,    10.2,     0.0,     0.0,     0.0,     0.0,     0.0,      0.0, 0, 0, 0, 0, 0, 0, 0, 0, 000100, 1E 35 05 01 37 FC 00 D1 27 1F 3A 00 0A 22 00 00 ,       
+//   1, 2010-09-13 13:41:34, 2010-08-13 14:46:53,  30,   53,  26.1,   55,  25.2,  15.5,  24.1,  1019.3,  1013.3,  3.1,   2,  5.8,   4,  10,  SW, 		   34,    10.2,     0.0,     0.0,     0.0,     0.0,     0.0,      0.0, 0, 0, 0, 0, 0, 0, 0, 0, 000100, 1E 35 05 01 37 FC 00 D1 27 1F 3A 00 0A 22 00 00 ,
 void print_history_item(weather_item_t *item, unsigned int index)
 {
 	weather_data_t *wd = &item->data;
 	int i;
-	
+
 	//      1    2   3   4   5   6      7   8      9      10	 11		12     13    14   15    16   17    18  19   20     21    22      23     24     25     26    27  28  29  30  31  32  33  34  35
-	printf("%u, %s, %s, %u, %u, %2.1f, %u, %2.1f, %2.1f, %2.1f, %4.1f, %4.1f, %2.1f, %u, %2.1f, %u, %2.1f, %s, %d, %2.1f, %2.1f, %2.1f, %2.1f, %2.1f, %2.1f, %2.1f, %u, %u, %u, %u, %u, %u, %u, %u, %06x, ", 
+	printf("%u, %s, %s, %u, %u, %2.1f, %u, %2.1f, %2.1f, %2.1f, %4.1f, %4.1f, %2.1f, %u, %2.1f, %u, %2.1f, %s, %d, %2.1f, %2.1f, %2.1f, %2.1f, %2.1f, %2.1f, %2.1f, %u, %u, %u, %u, %u, %u, %u, %u, %06x, ",
 		item->history_index, 							// 1  Index.
 		get_local_timestamp(), 							// 2  Date/time read from weather station.
 		get_timestamp(item->timestamp),					// 3  Date/time data was recored.
@@ -1155,7 +1257,7 @@ void print_history_item(weather_item_t *item, unsigned int index)
 	{
 		printf("%X ", wd->raw_data[i]);
 	}
-	
+
 	printf(",\n");
 }
 
@@ -1165,64 +1267,64 @@ void print_settings(weather_settings_t *ws)
 	printf("  Indoor temperature unit:\t%s\n",  (ws->unit_settings1 & (1 << 0)) ? "Fahrenheit" : "Celcius");
 	printf("  Outdoor temperature unit:\t%s\n", (ws->unit_settings1 & (1 << 1)) ? "Fahrenheit" : "Celcius");
 	printf("  Rain unit:\t\t\t%s\n", (ws->unit_settings1 & (1 << 2)) ? "mm" : "inch");
-	
+
 	printf("  Pressure unit:\t\t");
 	if (ws->unit_settings1 & (1 << 5))
 		printf("hPa");
-	else if (ws->unit_settings1 & (1 << 6)) 
+	else if (ws->unit_settings1 & (1 << 6))
 		printf("inHg");
-	else if (ws->unit_settings1 & (1 << 7)) 
+	else if (ws->unit_settings1 & (1 << 7))
 		printf("mmHg");
 	printf("\n");
-	
+
 	printf("  Wind speed unit:\t\t");
 	if (ws->unit_settings2 & (1 << 0))
 		printf("m/s");
-	else if (ws->unit_settings2 & (1 << 1)) 
+	else if (ws->unit_settings2 & (1 << 1))
 		printf("km/h");
-	else if (ws->unit_settings2 & (1 << 2)) 
+	else if (ws->unit_settings2 & (1 << 2))
 		printf("knot");
-	else if (ws->unit_settings2 & (1 << 3)) 
+	else if (ws->unit_settings2 & (1 << 3))
 		printf("m/h");
-	else if (ws->unit_settings2 & (1 << 4)) 
+	else if (ws->unit_settings2 & (1 << 4))
 		printf("bft");
 	printf("\n");
-	
+
 	printf("Display settings:\n");
 	printf("  Pressure:\t\t\t%s\n", (ws->display_options1 & (1 << 0)) ? "Relative" : "Absolute" );
 	printf("  Wind speed:\t\t\t%s\n", (ws->display_options1 & (1 << 1)) ? "Gust" : "Average");
 	printf("  Time:\t\t\t\t%s\n", (ws->display_options1 & (1 << 2)) ? "12 hour" : "24 hour");
 	printf("  Date:\t\t\t\t%s\n", (ws->display_options1 & (1 << 3)) ?  "Month-day-year" : "Day-month-year");
 	printf("  Time scale:\t\t\t%s\n", (ws->display_options1 & (1 << 4)) ? "24 hour" : "12 hour");
-	
+
 	printf("  Date:\t\t\t\t");
 	if (ws->display_options1 & (1 << 5))
 		printf("Show year year");
-	else if (ws->display_options1 & (1 << 6)) 
+	else if (ws->display_options1 & (1 << 6))
 		printf("Show day name");
-	else if (ws->display_options1 & (1 << 7)) 
+	else if (ws->display_options1 & (1 << 7))
 		printf("Alarm time");
 	printf("\n");
-	
+
 	printf("  Outdoor temperature:\t\t");
 	if (ws->display_options2 & (1 << 0))
 		printf("Temperature");
-	else if (ws->display_options2 & (1 << 1)) 
+	else if (ws->display_options2 & (1 << 1))
 		printf("Wind chill");
-	else if (ws->display_options2 & (1 << 2)) 
+	else if (ws->display_options2 & (1 << 2))
 		printf("Dew point");
 	printf("\n");
-	
+
 	printf("  Rain:\t\t\t\t");
 	if (ws->display_options2 & (1 << 3))
 		printf("Hour");
-	else if (ws->display_options2 & (1 << 4)) 
+	else if (ws->display_options2 & (1 << 4))
 		printf("Day");
-	else if (ws->display_options2 & (1 << 5)) 
+	else if (ws->display_options2 & (1 << 5))
 		printf("Week");
-	else if (ws->display_options2 & (1 << 6)) 
+	else if (ws->display_options2 & (1 << 6))
 		printf("Month");
-	else if (ws->display_options2 & (1 << 7)) 
+	else if (ws->display_options2 & (1 << 7))
 		printf("Total");
 	printf("\n");
 }
@@ -1230,12 +1332,12 @@ void print_settings(weather_settings_t *ws)
 void print_alarms(weather_settings_t *ws)
 {
 	#define ALARM_ENABLED(index, bit) ((ws->alarm_enable##index & (1 << bit)) ? "Enabled" : "Disabled")
-	printf("Alarm enable:\n"); 
-	printf("  Time:\t\t\t\t%02u:%02u\t\t%s\n",				(ws->alarm_time >> 4) & 0xf, 
-															ws->alarm_time & 0xf, 
+	printf("Alarm enable:\n");
+	printf("  Time:\t\t\t\t%02u:%02u\t\t%s\n",				(ws->alarm_time >> 4) & 0xf,
+															ws->alarm_time & 0xf,
 																								ALARM_ENABLED(1, 1));
-	printf("  Wind direction:\t\t%2.0f %s\t\t%s\n", 		ws->alarm_wind_direction * 22.5f, 
-															get_wind_direction(ws->alarm_wind_direction), 
+	printf("  Wind direction:\t\t%2.0f %s\t\t%s\n", 		ws->alarm_wind_direction * 22.5f,
+															get_wind_direction(ws->alarm_wind_direction),
 																								ALARM_ENABLED(1, 2));
 	printf("  Indoor humidity low:\t\t%u%%\t\t%s\n",		ws->alarm_inhumid_low,				ALARM_ENABLED(1, 4));
 	printf("  Indoor humidity high:\t\t%u%%\t\t%s\n",	 	ws->alarm_inhumid_high, 			ALARM_ENABLED(1, 5));
@@ -1262,36 +1364,37 @@ void print_alarms(weather_settings_t *ws)
 void print_maxmin(weather_settings_t *ws)
 {
 	printf("Max/min values:\t\t\tValue\t\tDate/Time\n");
+	printf("Indoor:\n");
 	printf("  Max indoor temperature:\t%2.1f C\t\t",		ws->max_intemp * 0.1f);		  print_bcd_date(ws->max_intemp_date); printf("\n");
 	printf("  Min indoor temperature:\t%2.1f C\t\t",		ws->min_intemp * 0.1f);		  print_bcd_date(ws->min_intemp_date); printf("\n");
+	printf("  Max indoor humidity:\t\t%u%%\t\t",			ws->max_inhumid);			  print_bcd_date(ws->max_inhumid_date); printf("\n");
+	printf("  Min indoor humidity:\t\t%u%%\t\t",			ws->min_inhumid);			  print_bcd_date(ws->min_inhumid_date); printf("\n");
+	printf("Outdoor:\n");
 	printf("  Max outdoor temperature:\t%2.1f C\t\t",		ws->max_outtemp * 0.1f);	  print_bcd_date(ws->max_outtemp_date); printf("\n");
 	printf("  Min outdoor temperature:\t%2.1f C\t\t",		ws->min_outtemp * 0.1f);	  print_bcd_date(ws->min_outtemp_date); printf("\n");
 	printf("  Max windchill:\t\t%2.1f C\t\t",				ws->max_windchill * 0.1f);	  print_bcd_date(ws->max_windchill_date); printf("\n");
 	printf("  Min windchill:\t\t%2.1f C\t\t",				ws->min_windchill * 0.1f);	  print_bcd_date(ws->min_windchill_date); printf("\n");
 	printf("  Max dewpoint:\t\t\t%2.1f C\t\t",				ws->max_dewpoint * 0.1f);	  print_bcd_date(ws->max_dewpoint_date); printf("\n");
 	printf("  Min dewpoint:\t\t\t%2.1f C\t\t",				ws->min_dewpoint * 0.1f);	  print_bcd_date(ws->min_dewpoint_date); printf("\n");
-	printf("  Max indoor humidity:\t\t%u%%\t\t",			ws->max_inhumid);			  print_bcd_date(ws->max_inhumid_date); printf("\n");
-	printf("  Min indoor humidity:\t\t%u%%\t\t",			ws->min_inhumid);			  print_bcd_date(ws->min_inhumid_date); printf("\n");
 	printf("  Max outdoor humidity:\t\t%u%%\t\t",			ws->max_outhumid);			  print_bcd_date(ws->max_outhumid_date); printf("\n");
 	printf("  Min outdoor humidity:\t\t%u%%\t\t",			ws->min_outhumid);			  print_bcd_date(ws->min_outhumid_date); printf("\n");
 	printf("  Max abs pressure:\t\t%5.1f hPa\t",			ws->max_abs_pressure * 0.1f); print_bcd_date(ws->max_abs_pressure_date); printf("\n");
 	printf("  Min abs pressure:\t\t%5.1f hPa\t", 			ws->min_abs_pressure * 0.1f); print_bcd_date(ws->min_abs_pressure_date); printf("\n");
 	printf("  Max relative pressure:\t%5.1f hPa\t",			ws->max_rel_pressure * 0.1f); print_bcd_date(ws->max_rel_pressure_date); printf("\n");
 	printf("  Min relative pressure:\t%5.1f hPa\t",			ws->min_rel_pressure * 0.1f); print_bcd_date(ws->min_rel_pressure_date); printf("\n");
-	printf("  Max average wind speed:\t%2.1f m/s\t\t",		ws->max_avg_wspeed * 0.1f);	  print_bcd_date(ws->max_avg_wspeed_date); printf("\n");
+	printf("  Max average wind speed:\t%2.1f m/s\t",		ws->max_avg_wspeed * 0.1f);	  print_bcd_date(ws->max_avg_wspeed_date); printf("\n");
 	printf("  Max gust wind speed:\t\t%2.1f m/s\t",			ws->max_gust_wspeed * 0.1f);  print_bcd_date(ws->max_gust_wspeed_date); printf("\n");
-	printf("  Max rain hourly:\t\t%2.1f mm\t\t",			ws->max_rain_hourly * 0.3f);  print_bcd_date(ws->max_rain_hourly_date); printf("\n");
-	printf("  Max rain daily:\t\t%2.1f mm\t\t",				ws->max_rain_daily * 0.3f);   print_bcd_date(ws->max_rain_daily_date); printf("\n");
-	printf("  Max rain weekly:\t\t%2.1f mm\t\t",			ws->max_rain_weekly * 0.3f);  print_bcd_date(ws->max_rain_weekly_date); printf("\n");
+	printf("  Max rain hourly:\t\t%2.1f mm\t",				ws->max_rain_hourly * 0.3f);  print_bcd_date(ws->max_rain_hourly_date); printf("\n");
+	printf("  Max rain daily:\t\t%2.1f mm\t",				ws->max_rain_daily * 0.3f);   print_bcd_date(ws->max_rain_daily_date); printf("\n");
+	printf("  Max rain weekly:\t\t%2.1f mm\t",				ws->max_rain_weekly * 0.3f);  print_bcd_date(ws->max_rain_weekly_date); printf("\n");
 	printf("  Max rain monthly:\t\t%2.1f mm\t",				ws->max_rain_monthly * 0.3f); print_bcd_date(ws->max_rain_monthly_date); printf("\n");
 	printf("  Max rain total:\t\t%2.1f mm\t",				ws->max_rain_total * 0.3f);   print_bcd_date(ws->max_rain_total_date); printf("\n");
 }
 
 void print_status(weather_settings_t *ws)
 {
-	printf("Magic number:\t\t\t0x%x%x\n", ws->magic_number[0], ws->magic_number[1]);
+	printf("Magic number:\t\t\t0x%x%x\n", ws->magic_number[0], ws->magic_number[1] & 0xff);
 	printf("Read period:\t\t\t%u minutes\n", ws->read_period);
-		
 	printf("Timezone:\t\t\tCET%s%u\n", (ws->timezone > 0) ? "+" : "-", ws->timezone);
 	printf("Data count:\t\t\t%u/%u (%1.1f%%)\n", ws->data_count, HISTORY_MAX, (float)ws->data_count / HISTORY_MAX * 100);
 	printf("Current memory position:\t%u (0x%x)\n", ws->current_pos, ws->current_pos);
@@ -1310,69 +1413,81 @@ void print_status(weather_settings_t *ws)
 
 void print_summary(weather_settings_t *ws, weather_item_t *item)
 {
-	weather_data_t *wd = &item->data;	
+	weather_data_t *wd = &item->data;
+	int lc = has_lost_contact_with_sensor(wd);
+
 	printf("Use --help for more options.\n\n");
 
 	printf("Indoor:\n");
-	printf("  Temperature:\t\t%2.1f C\n",		wd->in_temp * 0.1f);
-	printf("  Humidity:\t\t%u%%\n",				wd->in_humidity);
+	printf("  Temperature:\t\t%2.1f C\n",				wd->in_temp * 0.1f);
+	printf("  Humidity:\t\t%u%%\n",						wd->in_humidity);
 	printf("\n");
-	printf("Outdoor:\n");
-	printf("  Temperature:\t\t%2.1f C\n",		wd->out_temp * 0.1f);
-	printf("  Windchill:\t\t%2.1f C\n",			calculate_windchill(wd));
-	printf("  Dewpoint:\t\t%2.1f C\n",			calculate_dewpoint(wd));
-	printf("  Humidity:\t\t%u%%\n",				wd->out_humidity);
-	printf("  Abs pressure:\t\t%4.1f hPa\n",	wd->abs_pressure * 0.1f);
-	printf("  Rel pressure:\t\t%4.1f hPa\n",	calculate_rel_pressure(wd));
-	printf("  Average windspeed:\t%2.1f m/s\n",	convert_avg_windspeed(wd));
-	printf("  Gust windspeed:\t%2.1f m/s\n",	convert_gust_windspeed(wd));
-	printf("  Wind direction:\t%2.0f %s\n",		wd->wind_direction * 22.5f, get_wind_direction(wd->wind_direction));
-	printf("  Total rain:\t\t%2.1f mm\n",		wd->total_rain * 0.3f);
-	if (has_lost_contact_with_sensor(wd))
-		printf("  NO CONTACT WITH SENSOR\n");
+	printf("Outdoor: %s\n", 							lc ? "NO CONTACT WITH SENSOR" : "");
+
+	// Only show current data if we have sensor contact.
+	if (!lc)
+	{
+		printf("  Temperature:\t\t%0.1f C\n",			wd->out_temp * 0.1f );
+		printf("  Wind chill:\t\t%0.1f C\n",			calculate_windchill(wd));
+		printf("  Dewpoint:\t\t%0.1f C\n",				calculate_dewpoint(wd));
+		printf("  Humidity:\t\t%u%%\n",					wd->out_humidity);
+		printf("  Absolute pressure:\t%0.1f hPa\n",		wd->abs_pressure * 0.1f);
+		printf("  Relative pressure:\t%0.1f hPa\n",		calculate_rel_pressure(wd));
+		printf("  Average windspeed:\t%0.1f m/s\n",		convert_avg_windspeed(wd));
+		printf("  Gust wind speed:\t%2.1f m/s\n",		convert_gust_windspeed(wd));
+		printf("  Wind direction:\t%0.0f %s\n",			wd->wind_direction * 22.5f, get_wind_direction(wd->wind_direction));
+		printf("  Total rain:\t\t%0.1f mm\n",			wd->total_rain * 0.3f);
+	}
+
 	printf("\n");
 }
 
 void get_weather_data(struct usb_dev_handle *h)
 {
-	int i;
+	int i = 0;
 	int history_address;
 	weather_item_t history[HISTORY_MAX];
 	weather_settings_t ws;
 	unsigned int items_to_read = 0;
-	
-	PRINT_DEBUG("Start Reading status block\n");
-	ws = get_settings_block(h);
-	PRINT_DEBUG("End Reading status block\n\n");
-	
+
+	// Try 3 times until the magic number is correct, otherwise abort.
+	do
+	{
+		if (i >= 3)
+		{
+			fprintf(stderr, "Incorrect magic number!\n");
+			return;
+		}
+
+		PRINT_DEBUG("Start Reading status block\n");
+		ws = get_settings_block(h);
+		PRINT_DEBUG("End Reading status block\n\n");
+
+		i++;
+	} while ((ws.magic_number[0] != 0x55) && (ws.magic_number[1] != 0xaa));
+
 	if (program_settings.show_status)
 	{
 		print_status(&ws);
 	}
-	
+
 	if (program_settings.show_alarms)
 	{
 		print_alarms(&ws);
 	}
-	
+
 	if (program_settings.show_settings)
 	{
 		print_settings(&ws);
 	}
-	
+
 	if (program_settings.show_maxmin)
 	{
 		print_maxmin(&ws);
 	}
-	
-	if (ws.magic_number[0] != 0x55)
-	{
-		fprintf(stderr, "Incorrect magic number!\n");
-		return;
-	}
-	
+
 	items_to_read = (program_settings.count == 0) ? ws.data_count : program_settings.count;
-	
+
 	// Read all events.
 	// Loop through the events in reverse order, starting with the last recorded one
 	// and calculate the timestamp for each event. We only know the current
@@ -1383,32 +1498,41 @@ void get_weather_data(struct usb_dev_handle *h)
 		time_t station_date = bcd_to_unix_date(parse_bcd_date(ws.datetime));
 		unsigned int total_seconds = 0;
 		unsigned int seconds = 0;
+		unsigned int history_begin = (ws.current_pos + HISTORY_CHUNK_SIZE);
 		int history_index;
 		int j;
 
 		memset(&history, 0, sizeof(history));
-		
+
 		PRINT_DEBUG("Start reading history blocks\n");
 		PRINT_DEBUG("Index\tTimestamp\t\tDelay\n");
 
 		for (history_address = ws.current_pos, i = (HISTORY_MAX - 1), j = 0;
 			(j < items_to_read);
-			history_address -= 16, i--, j++)
+			history_address -= HISTORY_CHUNK_SIZE, i--, j++)
 		{
+			// The buffer is full so it acts as a circular buffer, so we need to
+			// wrap to the end to get the next item.
 			if (history_address < HISTORY_START)
 			{
 				history_address = HISTORY_END - (HISTORY_START - history_address);
 			}
-			
-			history_index = (ws.data_count < HISTORY_MAX) 
-				? ((history_address - HISTORY_START) / 16) 
-				: (((history_address - HISTORY_START + (history_address + 16)) / 16));
+
+			// Calculate the index we're at in the history, from 0-4080.
+			if (ws.data_count < HISTORY_MAX)
+			{
+				history_index = 1 + (history_address - HISTORY_START) / HISTORY_CHUNK_SIZE; // Normal.
+			}
+			else
+			{
+				history_index = 1 + ((history_address - HISTORY_START) + (HISTORY_END - history_begin)) / HISTORY_CHUNK_SIZE; // Circular buffer.
+			}
 
 			// Read history chunk.
 			history[i].history_index = history_index;
 			history[i].address = history_address;
 			history[i].data = get_history_chunk(h, &ws, history_address);
-			
+
 			// Calculate timestamp.
 			history[i].timestamp = (time_t)(station_date - total_seconds);
 			seconds = history[i].data.delay * 60;
@@ -1419,26 +1543,26 @@ void get_weather_data(struct usb_dev_handle *h)
 			{
 				printf("DEBUG: Seconds before current event = %d\n", total_seconds);
 				printf("DEBUG: Temp = %2.1fC\n", history[i].data.in_temp * 0.1f);
-				printf("DEBUG: %d,\t%s,\t%u minutes\n", 
-					i, 
-					get_timestamp(history[i].timestamp), 
+				printf("DEBUG: %d,\t%s,\t%u minutes\n",
+					i,
+					get_timestamp(history[i].timestamp),
 					history[i].data.delay);
 			}
 		}
-		
+
 		PRINT_DEBUG("End reading history blocks\n\n");
 	}
-	
+
 	if (program_settings.show_summary)
 	{
 		PRINT_DEBUG("Show summary:\n");
 		print_summary(&ws, &history[HISTORY_MAX - 1]);
 	}
-	
+
 	if (program_settings.show_formatted)
 	{
 		PRINT_DEBUG("Show formatted:\n");
-		
+
 		for (i = (HISTORY_MAX - items_to_read); i < HISTORY_MAX; i++)
 		{
 			print_history_item_formatstring(&ws, history, i, program_settings.format_str);
@@ -1454,7 +1578,7 @@ void get_weather_data(struct usb_dev_handle *h)
 		}
 	}
 }
- 
+
 //
 // Sets weather display settings.
 //
@@ -1471,12 +1595,16 @@ void set_weather_data(struct usb_dev_handle *h)
 			fprintf(stderr, "Failed to update timezone.\n");
 		}
 	}
-	
+
 	if (program_settings.set_delay)
 	{
 		if (!set_delay(h, program_settings.delay))
 		{
 			printf("Updating delay set to %u minutes.\n", program_settings.delay);
+			printf("!!! NOTICE that using --quickrain now will produce inaccurate !!!\n");
+			printf("!!! rain data unless you reset the station memory, due to the !!!\n");
+			printf("!!! fact that it assumes the delay between each weather       !!!\n");
+			printf("!!! reading is the same throughout the entire history.        !!!\n");
 		}
 		else
 		{
@@ -1489,16 +1617,16 @@ int read_arguments(int argc, char **argv)
 {
 	int c;
 	memset(&program_settings, 0, sizeof(program_settings));
-	
+
 	// Set defaults.
 	program_settings.count = 1;
 	program_settings.mode = get_mode;
 	program_settings.product_id = PRODUCT_ID;
 	program_settings.vendor_id = VENDOR_ID;
-	
+
 	while (1)
 	{
-		static struct option long_options[] = 
+		static struct option long_options[] =
 		{
 			{"all", no_argument,			0, 'a'},
 			{"status", no_argument,			&program_settings.show_status, 1},
@@ -1520,15 +1648,15 @@ int read_arguments(int argc, char **argv)
 			{"vendorid", required_argument,		0, 0},
 			{0, 0, 0, 0}
 		};
-		
+
 		int option_index = 0;
 		c = getopt_long(argc, argv, "aesvmc:ht:d:A:", long_options, &option_index);
-		
+
 		if (c == -1)
 		{
 			break;
 		}
-		
+
 		switch (c)
 		{
 			case 0:
@@ -1550,10 +1678,10 @@ int read_arguments(int argc, char **argv)
 				{
 					sscanf(optarg, "%x", &program_settings.vendor_id);
 				}
-				
+
 				break;
 			}
-			case 'a': program_settings.count = 0; 				break;
+			case 'a': program_settings.count = 0;				break;
 			case 'v': program_settings.debug++;					break;
 			case 'm': program_settings.show_maxmin = 1;			break;
 			case 's': program_settings.show_status = 1;			break;
@@ -1592,19 +1720,26 @@ int read_arguments(int argc, char **argv)
 			}
 		}
 	}
-	
+
 	// Set show summary as default if nothing else has been set to show.
-	if (!program_settings.show_status 
-	&& !program_settings.show_maxmin 
-	&& !program_settings.show_easyweather 
+	if (!program_settings.show_status
+	&& !program_settings.show_maxmin
+	&& !program_settings.show_easyweather
 	&& !program_settings.show_formatlist
 	&& !program_settings.show_formatted)
 	{
 		program_settings.show_summary = 1;
 	}
-	
+
+	// Turn off quickrain if we're getting all items,
+	// then we can be accurate without spending more time :)
+	if (program_settings.count == 0)
+	{
+		program_settings.quickrain = 0;
+	}
+
 	debug = program_settings.debug;
-	
+
 	return 0;
 }
 
@@ -1615,7 +1750,7 @@ int main(int argc, char **argv)
 		printf("Error reading arguments\n");
 		return 1;
 	}
-		
+
 	if (program_settings.show_formatlist)
 	{
 		printf("%%h - Inside humidity (%%).\n");
@@ -1630,7 +1765,8 @@ int main(int argc, char **argv)
 		printf("%%d - Wind direction in degrees.\n");
 		printf("%%P - Absolute pressure (hPa).\n");
 		printf("%%p - Relative pressure (hPa).\n");
-		printf("!!! To correctly calculate rain info you need to read at least 24h of events or use --quickrain !!!\n");
+		printf("!!! To correctly calculate rain info you need to read  !!!\n");
+		printf("!!! at least 24h of events or use --quickrain          !!!\n");
 		printf("%%r - Rain 1h (mm/h).\n");
 		printf("%%f - Rain 24h (mm/h).\n");
 		printf("%%F - Rain 24h (mm).\n");
@@ -1639,6 +1775,7 @@ int main(int argc, char **argv)
 		printf("%%e - Have we lost contact with the sensor for this reading? (True/False).\n");
 		printf("%%E - Have we lost contact with the sensor for this reading? (1/0).\n");
 		printf("%%b - Original bytes in hex format containing the data.\n");
+		printf("%%a - Address in history.\n");
 		printf("%%%% - %% sign\n");
 		printf("\\n - Newline.\n");
 		printf("\\t - Tab.\n");
@@ -1646,11 +1783,11 @@ int main(int argc, char **argv)
 
 		return 0;
 	}
-	
+
 	// Open te device.
 	devh = open_device();
 	init_device_descriptors();
-	
+
 	switch (program_settings.mode)
 	{
 		default:
@@ -1665,7 +1802,7 @@ int main(int argc, char **argv)
 			break;
 		}
 	}
-	
+
 	close_device(devh);
 
 	return 0;
