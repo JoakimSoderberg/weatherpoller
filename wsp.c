@@ -1061,7 +1061,7 @@ weather_item_t *get_history_item_seconds_delta(weather_settings_t *ws, weather_i
 		{
 			int new_address;
 			int new_index;
-			unsigned int history_begin = (ws->current_pos + HISTORY_CHUNK_SIZE);
+			//unsigned int history_begin = (ws->current_pos + HISTORY_CHUNK_SIZE);
 
 			new_index = history[index].history_index + index_delta;
 			new_address = HISTORY_START + (new_index * HISTORY_CHUNK_SIZE);
@@ -1113,7 +1113,7 @@ float calculate_rain_hours_ago(weather_settings_t *ws, weather_item_t *history, 
 	float total_rain 		= cur->data.total_rain * 0.3f;
 	float prev_total_rain	= prev->data.total_rain * 0.3f;
 
-	if ((prev->timestamp == 0))
+	if ((prev->timestamp == 0)
 	|| (abs(cur->timestamp - prev->timestamp) < seconds_to_go_back))
 	{
 		return 0.0;
