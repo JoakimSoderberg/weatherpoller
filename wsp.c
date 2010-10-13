@@ -98,7 +98,7 @@ int svn_revision()
 	return 0;
 }
 
-void dprintf(unsigned int debug_level, const char* format, ... ) 
+void debug_printf(unsigned int debug_level, const char* format, ... ) 
 {
 	if (debug >= debug_level)
 	{
@@ -523,7 +523,7 @@ void print_bytes(int debug_level, char *bytes, unsigned int len)
 			printf("%02x ", (int)((unsigned char)bytes[i]));
 		}
 		
-		dprintf(debug_level, "\n");
+		debug_printf(debug_level, "\n");
     }
 }
 
@@ -534,7 +534,7 @@ int send_usb_msgbuf(struct usb_dev_handle *h, char *msg, int msgsize)
 {
 	int bytes_written = 0;
 
-	dprintf(2, "--> ");
+	debug_printf(2, "--> ");
 	print_bytes(2, msg, msgsize);
 
 	bytes_written = usb_control_msg(h, USB_TYPE_CLASS + USB_RECIP_INTERFACE,
@@ -612,13 +612,13 @@ int read_weather_ack(struct usb_dev_handle *h)
 	// The ack should consist of just 0xa5.
 	for (i = 0; i < 8; i++)
 	{
-		dprintf(2, "%x ", (buf[i] & 0xff));
+		debug_printf(2, "%x ", (buf[i] & 0xff));
 
 		if ((buf[i] & 0xff) != 0xa5)
 			return -1;
 	}
 
-	dprintf(2, "\n");
+	debug_printf(2, "\n");
 
 	return 0;
 }
@@ -1508,9 +1508,9 @@ void get_weather_data(struct usb_dev_handle *h)
 			return;
 		}
 
-		dprintf(1, "Start Reading status block\n");
+		debug_printf(1, "Start Reading status block\n");
 		ws = get_settings_block(h);
-		dprintf(1, "End Reading status block\n\n");
+		debug_printf(1, "End Reading status block\n\n");
 
 		i++;
 	} while ((ws.magic_number[0] != 0x55) && (ws.magic_number[1] != 0xaa));
@@ -1553,8 +1553,8 @@ void get_weather_data(struct usb_dev_handle *h)
 
 		memset(&history, 0, sizeof(history));
 
-		dprintf(2, "Start reading history blocks\n");
-		dprintf(2, "Index\tTimestamp\t\tDelay\n");
+		debug_printf(2, "Start reading history blocks\n");
+		debug_printf(2, "Index\tTimestamp\t\tDelay\n");
 
 		for (history_address = ws.current_pos, i = (HISTORY_MAX - 1), j = 0;
 			(j < items_to_read);
@@ -1588,27 +1588,27 @@ void get_weather_data(struct usb_dev_handle *h)
 			total_seconds += seconds;
 
 			// Debug print.	
-			dprintf(2, "DEBUG: Seconds before current event = %d\n", total_seconds);
-			dprintf(2, "DEBUG: Temp = %2.1fC\n", history[i].data.in_temp * 0.1f);
-			dprintf(2, "DEBUG: %d,\t%s,\t%u minutes\n",
+			debug_printf(2, "DEBUG: Seconds before current event = %d\n", total_seconds);
+			debug_printf(2, "DEBUG: Temp = %2.1fC\n", history[i].data.in_temp * 0.1f);
+			debug_printf(2, "DEBUG: %d,\t%s,\t%u minutes\n",
 				i,
 				get_timestamp(history[i].timestamp),
 				history[i].data.delay);
 		
 		}
 
-		dprintf(1, "End reading history blocks\n\n");
+		debug_printf(1, "End reading history blocks\n\n");
 	}
 
 	if (program_settings.show_summary)
 	{
-		dprintf(1, "Show summary:\n");
+		debug_printf(1, "Show summary:\n");
 		print_summary(&ws, &history[HISTORY_MAX - 1]);
 	}
 
 	if (program_settings.show_formatted)
 	{
-		dprintf(1, "Show formatted:\n");
+		debug_printf(1, "Show formatted:\n");
 
 		for (i = (HISTORY_MAX - items_to_read); i < HISTORY_MAX; i++)
 		{
@@ -1924,7 +1924,7 @@ int main(int argc, char **argv)
 	{
 		FILE *f;
 		
-		dprintf(1, "Reading input from \"%s\"\n", program_settings.infile);
+		debug_printf(1, "Reading input from \"%s\"\n", program_settings.infile);
 		
 		if (program_settings.mode != get_mode)
 		{
