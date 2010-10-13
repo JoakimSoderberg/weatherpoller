@@ -28,6 +28,7 @@
 // (http://www.jim-easterbrook.me.uk/weather/ew/).
 //
 #include <stdio.h>
+#include <stdarg.h>
 #include <string.h>
 #include <stdlib.h>
 #include <string.h>
@@ -56,6 +57,8 @@
 #define WEATHER_SETTINGS_CHUNK_SIZE 256
 #define HISTORY_START WEATHER_SETTINGS_CHUNK_SIZE
 #define HISTORY_END (HISTORY_START + (HISTORY_MAX * HISTORY_CHUNK_SIZE))
+
+#define NUM_TRIES 3
 
 #define LOST_SENSOR_CONTACT_BIT 6
 #define RAIN_COUNTER_OVERFLOW_BIT 7
@@ -95,10 +98,22 @@ int svn_revision()
 	return 0;
 }
 
+void dprintf(unsigned int debug_level, const char* format, ... ) 
+{
+	if (debug >= debug_level)
+	{
+		va_list args;
+		va_start(args, format);
+		vprintf(format, args);
+		va_end(args);
+	}
+}
+
 typedef enum mode_s
 {
 	get_mode,
-	set_mode
+	set_mode,
+	dump_mode
 } mode_t;
 
 typedef struct program_settings_s
@@ -124,6 +139,11 @@ typedef struct program_settings_s
 	int product_id;				// The product id used to search for the usb device.
 	int vendor_id;				// The vendor id used to search for the usb device.
 	int quickrain;				// 0 or 1. Use quick rain calculations.
+	int dumpmem;				// 0 or 1. Dump memory to a file.
+	char dumpfile[2048];		// The path to the dumpfile.
+	int from_file;				// 0 or 1. Read from a dump file instead of from the weather station.
+	char infile[2048];			// The path to the file to read from instead of the weather station memory.
+	FILE *f;					// File handle for the input file.
 } program_settings_t;
 
 static program_settings_t program_settings;
@@ -345,12 +365,16 @@ void show_usage(char *program_name)
 	printf("                        the delay is used. This will result in incorrect\n");
 	printf("                        values if you changed the delay without resetting\n");
 	printf("                        the memory. Notice that rain over 1h, 24h and so on\n");
+	printf("                        might be calculated incorrectly.\n");
 	printf("  --vendorid #          Changes the vendor id, should be in hex format.\n");
     printf("                        Default is %x.\n", VENDOR_ID);
 	printf("  --productid #         Changes the product id, shoulb be in hex format.\n");
 	printf("                        Default is %x.\n", PRODUCT_ID);
 	printf("  --format <string>     Writes the output in the given format.\n");
 	printf("  --formatlist          Lists available format string variables.\n");
+	printf("  --dumpmem <path>      Dumps the entire weather station memory to a file.\n");
+	printf("  --infile <path>       Uses a file as input instead of reading from the\n");
+	printf("                        weather station memory. Use output from --dumpmem.\n");
 	printf("  --summary             Shows a small summary of the last recorded weather.\n");
 	printf("  -h, --help            Shows this help text.\n");
 	printf("\n");
@@ -488,9 +512,9 @@ void init_device_descriptors()
 //
 // Prints bytes for debug purposes.
 //
-void print_bytes(char *bytes, unsigned int len)
+void print_bytes(int debug_level, char *bytes, unsigned int len)
 {
-    if ((program_settings.debug >= 2) && (len > 0))
+    if ((debug >= debug_level) && (len > 0))
 	{
 		int i;
 
@@ -498,62 +522,130 @@ void print_bytes(char *bytes, unsigned int len)
 		{
 			printf("%02x ", (int)((unsigned char)bytes[i]));
 		}
+		
+		dprintf(debug_level, "\n");
     }
-
-	printf("\n");
 }
 
 //
 // Sends a USB message to the device from a given buffer.
 //
-void send_usb_msgbuf(struct usb_dev_handle *h, char *msg, int msgsize)
+int send_usb_msgbuf(struct usb_dev_handle *h, char *msg, int msgsize)
 {
 	int bytes_written = 0;
 
-	if (debug >= 2)
-	{
-		printf("--> ");
-		print_bytes(msg, msgsize);
-	}
+	dprintf(2, "--> ");
+	print_bytes(2, msg, msgsize);
 
 	bytes_written = usb_control_msg(h, USB_TYPE_CLASS + USB_RECIP_INTERFACE,
 									9, 0x200, 0, msg, msgsize, USB_TIMEOUT);
-	assert(bytes_written == msgsize);
-}
-
-//
-// Sends 8 bytes of data over usb.
-//
-void send_usb_msg8(struct usb_dev_handle *h, char b1, char b2, char b3, char b4, char b5, char b6, char b7, char b8)
-{
-	char buf[8];
-	buf[0] = b1;
-	buf[1] = b2;
-	buf[2] = b3;
-	buf[3] = b4;
-	buf[4] = b5;
-	buf[5] = b6;
-	buf[6] = b7;
-	buf[7] = b8;
-
-	send_usb_msgbuf(h, buf, sizeof(buf));
-}
-
-//
-// The weather station wants 8 byte control messages.
-// Only 4 bytes are relevant and are repeated twice for each message.
-//
-void send_weather_msg(struct usb_dev_handle *h, char b1, char b2, char b3, char b4)
-{
-	send_usb_msg8(h, b1, b2, b3, b4, b1, b2, b3, b4);
+	//assert(bytes_written == msgsize);
+	
+	return bytes_written;
 }
 
 //
 // All data from the weather station is read in 32 byte chunks.
 //
-int read_weather_msg(struct usb_dev_handle *h, char *buf)
+int read_weather_msg(struct usb_dev_handle *h, char buf[32])
 {
 	return usb_interrupt_read(h, ENDPOINT_INTERRUPT_ADDRESS, buf, 32, USB_TIMEOUT);
+}
+
+//
+// Reads a weather message from a given address in history.
+//
+int read_weather_address(struct usb_dev_handle *h, unsigned short addr, char buf[32])
+{
+	if (program_settings.from_file)
+	{
+		// Special case if we try to read the next to last history chunk.
+		int bytes_to_read = (addr == (HISTORY_END - HISTORY_CHUNK_SIZE)) ? 16 : 32;
+		FILE *f = program_settings.f;
+		
+		// Only open the file once.
+		if (!f)
+		{
+			f = fopen(program_settings.infile, "r");
+		}
+
+		if (fseek(f, addr, SEEK_SET))
+		{
+			fprintf(stderr, "Failed to seek to position %d (0x%d) in file.\n", addr, addr);
+			return -1;
+		}
+		
+		if (fread(buf, 1, bytes_to_read, f) != bytes_to_read)
+		{
+			if (feof(f))
+			{
+				fprintf(stderr, "Tried to read past the end of file.\n");
+			}
+			else
+			{
+				perror("Error reading from file. ");
+			}
+			
+			return -1;
+		}
+		
+		return 0;
+	}
+	else
+	{
+		char msg[8] = {0xa1, (addr >> 8), (addr & 0xff), 0x20, 0xa1, 0, 0, 0x20};
+		send_usb_msgbuf(h, msg, 8);
+		return (read_weather_msg(h, buf) != 32);
+	}
+}
+
+//
+// Reads weather ack message when writing setting data.
+//
+int read_weather_ack(struct usb_dev_handle *h)
+{
+	unsigned int i;
+	char buf[8];
+
+	read_weather_msg(h, buf);
+
+	// The ack should consist of just 0xa5.
+	for (i = 0; i < 8; i++)
+	{
+		dprintf(2, "%x ", (buf[i] & 0xff));
+
+		if ((buf[i] & 0xff) != 0xa5)
+			return -1;
+	}
+
+	dprintf(2, "\n");
+
+	return 0;
+}
+
+//
+// Writes 1 byte of data to the weather station.
+//
+int write_weather_1(struct usb_dev_handle *h, unsigned short addr, char data)
+{
+	char msg[8] = {0xa2, (addr >> 8), (addr & 0xff), 0x20, 0xa2, data, 0, 0x20};
+
+	send_usb_msgbuf(h, msg, 8);	
+
+	return read_weather_ack(h);
+}
+
+//
+// Writes 32 bytes of data to the weather station.
+//
+int write_weather_32(struct usb_dev_handle *h, unsigned short addr, char data[32])
+{
+	char msg[8] = {0xa0, (addr >> 8), (addr & 0xff), 0x20, 0xa0, 0, 0, 0x20};
+
+	send_usb_msgbuf(h, msg, 8);		// Send write command.
+	send_usb_msgbuf(h, data, 32);	// Send data.
+	
+	return read_weather_ack(h);
 }
 
 //
@@ -645,13 +737,10 @@ void get_settings_block_raw(struct usb_dev_handle *h, char *buf, unsigned int le
 	// Read 256 bytes in 32-byte chunks.
 	for (offset = 0; (offset < WEATHER_SETTINGS_CHUNK_SIZE) && (offset < len); offset += 32)
 	{
-		send_weather_msg(h, 0xa1, 0x00, offset, 0x20);
-		read_weather_msg(h, &buf[offset]);
-
-		if (debug >= 2)
-		{
-			print_bytes(&buf[offset], 32);
-		}
+		// TODO: Check for error here.
+		read_weather_address(h, offset, &buf[offset]);
+		
+		print_bytes(2, &buf[offset], 32);
 	}
 }
 
@@ -760,49 +849,21 @@ weather_settings_t get_settings_block(struct usb_dev_handle *h)
 }
 
 //
-// Reads weather ack message when writing setting data.
-//
-int read_weather_ack(struct usb_dev_handle *h)
-{
-	unsigned int i;
-	char buf[8];
-
-	read_weather_msg(h, buf);
-
-	// The ack should consist of just 0xa5.
-	for (i = 0; i < 8; i++)
-	{
-		if (debug >= 2)
-			printf("%x ", (buf[i] & 0xff));
-
-		if ((buf[i] & 0xff) != 0xa5)
-			return -1;
-	}
-
-	if (debug >= 2)
-		printf("\n");
-
-	return 0;
-}
-
-//
-// Writes a notify byte so the weather station knows a setting has changed.
-//
-void notify_weather_setting_change(struct usb_dev_handle *h)
-{
-	// Write 0xAA to address 0x1a to indicate a change of settings.
-	send_usb_msg8(h, 0xa2, 0x00, 0x1a, 0x20, 0xa2, 0xaa, 0x00, 0x20);
-	read_weather_ack(h);
-}
-
-//
 // Sets a single byte at a specified offset in the fixed weather settings chunk.
 //
 int set_weather_setting_byte(struct usb_dev_handle *h, unsigned int offset, char data)
 {
 	assert(offset < WEATHER_SETTINGS_CHUNK_SIZE);
-	send_usb_msg8(h, 0xa2, 0x00, offset, 0x20, 0xa2, data, 0x00, 0x20);
-	return read_weather_ack(h);
+	return write_weather_1(h, offset, data);
+}
+
+//
+// Writes a notify byte so the weather station knows a setting has changed.
+//
+int notify_weather_setting_change(struct usb_dev_handle *h)
+{
+	// Write 0xAA to address 0x1a to indicate a change of settings.
+	return set_weather_setting_byte(h, 0x1a, 0xaa);
 }
 
 //
@@ -827,7 +888,7 @@ int set_weather_setting(struct usb_dev_handle *h, unsigned int offset, char *dat
 int set_weather_settings_bulk(struct usb_dev_handle *h, unsigned int change_offset, char *data, unsigned int len)
 {
 	unsigned offset;
-	unsigned int i;
+	//unsigned int i;
 	char buf[WEATHER_SETTINGS_CHUNK_SIZE];
 
 	// Make sure we're not trying to write outside the settings buffer.
@@ -840,14 +901,8 @@ int set_weather_settings_bulk(struct usb_dev_handle *h, unsigned int change_offs
 
 	// Send back the settings in 3 32-bit chunks.
 	for (offset = 0; offset < (32 * 3); offset += 32)
-	{
-		send_weather_msg(h, 0xa0, 0x00, offset, 0x20);
-
-		// Send 4 * 8 bytes.
-		for (i = offset; i < (offset + (4 * 8)); i += 8)
-		{
-			send_usb_msgbuf(h, &buf[i], 8);
-		}
+	{		
+		write_weather_32(h, offset, &buf[offset]);
 
 		if (read_weather_ack(h) != 0)
 		{
@@ -878,33 +933,27 @@ weather_data_t get_history_chunk(struct usb_dev_handle *h, weather_settings_t *w
 	static unsigned short prev_history_pos = -1;
 	static char buf[32];
 	char *b;
-	unsigned short high_pos = (history_pos >> 8) & 0xff;
-	unsigned short low_pos = (history_pos & 0xff);
+	int trycount = 0;
 	weather_data_t d;
 
-	// When we fetch a new item from the history, we fetch 32 bytes of data
-	// but we're only interested in the first 16 bytes each time.
-	// If we're fetching the next 16 bytes, just read the next 16 bytes
-	// from the previous buffer.
-	if (history_pos == (prev_history_pos + HISTORY_CHUNK_SIZE))
+	// Try reading the chunk 3 times.
+	do
 	{
-		b = buf + HISTORY_CHUNK_SIZE;
-		//fprintf(stderr, ".");
-	}
-	else
-	{
-		// The memory address we want to read from is sent.
-		send_weather_msg(h, 0xa1, high_pos, low_pos, 0x20);
-		read_weather_msg(h, buf);
-
-		if (debug >= 2)
+		// We read two chunks at a time. Since we always read 32 bytes at a time. 1 chunk = 16 bytes.
+		if (!read_weather_address(h, history_pos, buf))
 		{
-			print_bytes(buf, 32);
+			print_bytes(2, buf, 32);
+			break;
 		}
+		
+		print_bytes(2, buf, 32);
+		
+		fprintf(stderr, "Failed to read history chunk. Try %d of %d\n", trycount, NUM_TRIES);
+		
+		trycount++;		
+	} while (trycount < NUM_TRIES);
 
-		b = buf;
-		//fprintf(stderr, " %u ", history_pos);
-	}
+	b = buf;
 
 	memset(&d, 0, sizeof(d));
 
@@ -928,14 +977,14 @@ weather_data_t get_history_chunk(struct usb_dev_handle *h, weather_settings_t *w
 	return d;
 }
 
-int has_lost_contact_with_sensor(weather_data_t *wdp)
+int has_contact_with_sensor(weather_data_t *wdp)
 {
-	return ((wdp->status >> LOST_SENSOR_CONTACT_BIT) & 0x1);
+	return !((wdp->status >> LOST_SENSOR_CONTACT_BIT) & 0x1);
 }
 
 float convert_avg_windspeed(weather_data_t *wdp)
 {
-	return (((wdp->wind_highbyte & 0xf) << 8) | (wdp->gust_wind_lowbyte & 0xff)) * 0.1f;
+	return (((wdp->wind_highbyte & 0xf) << 8) | (wdp->avg_wind_lowbyte & 0xff)) * 0.1f;
 }
 
 float convert_gust_windspeed(weather_data_t *wdp)
@@ -1087,7 +1136,7 @@ weather_item_t *get_history_item_seconds_delta(weather_settings_t *ws, weather_i
 			if (history[i].timestamp == 0)
 				return &history[i-1];
 
-			// TODO: if (has_lost_contact_with_sensor(&history[i].data)) ...
+			// TODO: if (has_contact_with_sensor(&history[i].data)) ...
 			delay_seconds = (history[i].data.delay * 60);
 			seconds += delay_seconds;
 
@@ -1165,8 +1214,8 @@ void print_history_item_formatstring(weather_settings_t *ws, weather_item_t *his
 				case 'F': printf("%0.1f", calculate_rain_24h(ws, history, index) / 24.0f); break; // rain 24h mm.
 				case 'f': printf("%0.1f", calculate_rain_24h(ws, history, index)); break; // rain 24h mm/h.
 				case 'N': printf("%s", get_timestamp(history[index].timestamp)); break; // Date.
-				case 'e': printf("%s", has_lost_contact_with_sensor(wd) ? "True" : "False"); break; // Lost contact with sensor? True or False.
-				case 'E': printf("%d", has_lost_contact_with_sensor(wd)); break; // Lost contact with sensor? 1 or 0.
+				case 'e': printf("%s", has_contact_with_sensor(wd) ? "True" : "False"); break; // Has contact with sensor? True or False.
+				case 'E': printf("%d", has_contact_with_sensor(wd)); break; // Has contact with sensor? 1 or 0.
 				case 'a': printf("%04x", history[index].address); break; // History address.
 				case '%': printf("%%"); break;
 				case 'b':
@@ -1414,7 +1463,7 @@ void print_status(weather_settings_t *ws)
 void print_summary(weather_settings_t *ws, weather_item_t *item)
 {
 	weather_data_t *wd = &item->data;
-	int lc = has_lost_contact_with_sensor(wd);
+	int contact = has_contact_with_sensor(wd);
 
 	printf("Use --help for more options.\n\n");
 
@@ -1422,10 +1471,10 @@ void print_summary(weather_settings_t *ws, weather_item_t *item)
 	printf("  Temperature:\t\t%2.1f C\n",				wd->in_temp * 0.1f);
 	printf("  Humidity:\t\t%u%%\n",						wd->in_humidity);
 	printf("\n");
-	printf("Outdoor: %s\n", 							lc ? "NO CONTACT WITH SENSOR" : "");
+	printf("Outdoor: %s\n", (!contact) ? "NO CONTACT WITH SENSOR" : "");
 
 	// Only show current data if we have sensor contact.
-	if (!lc)
+	if (contact)
 	{
 		printf("  Temperature:\t\t%0.1f C\n",			wd->out_temp * 0.1f );
 		printf("  Wind chill:\t\t%0.1f C\n",			calculate_windchill(wd));
@@ -1453,15 +1502,15 @@ void get_weather_data(struct usb_dev_handle *h)
 	// Try 3 times until the magic number is correct, otherwise abort.
 	do
 	{
-		if (i >= 3)
+		if (i >= NUM_TRIES)
 		{
 			fprintf(stderr, "Incorrect magic number!\n");
 			return;
 		}
 
-		PRINT_DEBUG("Start Reading status block\n");
+		dprintf(1, "Start Reading status block\n");
 		ws = get_settings_block(h);
-		PRINT_DEBUG("End Reading status block\n\n");
+		dprintf(1, "End Reading status block\n\n");
 
 		i++;
 	} while ((ws.magic_number[0] != 0x55) && (ws.magic_number[1] != 0xaa));
@@ -1504,8 +1553,8 @@ void get_weather_data(struct usb_dev_handle *h)
 
 		memset(&history, 0, sizeof(history));
 
-		PRINT_DEBUG("Start reading history blocks\n");
-		PRINT_DEBUG("Index\tTimestamp\t\tDelay\n");
+		dprintf(2, "Start reading history blocks\n");
+		dprintf(2, "Index\tTimestamp\t\tDelay\n");
 
 		for (history_address = ws.current_pos, i = (HISTORY_MAX - 1), j = 0;
 			(j < items_to_read);
@@ -1538,30 +1587,28 @@ void get_weather_data(struct usb_dev_handle *h)
 			seconds = history[i].data.delay * 60;
 			total_seconds += seconds;
 
-			// Debug print.
-			if (debug)
-			{
-				printf("DEBUG: Seconds before current event = %d\n", total_seconds);
-				printf("DEBUG: Temp = %2.1fC\n", history[i].data.in_temp * 0.1f);
-				printf("DEBUG: %d,\t%s,\t%u minutes\n",
-					i,
-					get_timestamp(history[i].timestamp),
-					history[i].data.delay);
-			}
+			// Debug print.	
+			dprintf(2, "DEBUG: Seconds before current event = %d\n", total_seconds);
+			dprintf(2, "DEBUG: Temp = %2.1fC\n", history[i].data.in_temp * 0.1f);
+			dprintf(2, "DEBUG: %d,\t%s,\t%u minutes\n",
+				i,
+				get_timestamp(history[i].timestamp),
+				history[i].data.delay);
+		
 		}
 
-		PRINT_DEBUG("End reading history blocks\n\n");
+		dprintf(1, "End reading history blocks\n\n");
 	}
 
 	if (program_settings.show_summary)
 	{
-		PRINT_DEBUG("Show summary:\n");
+		dprintf(1, "Show summary:\n");
 		print_summary(&ws, &history[HISTORY_MAX - 1]);
 	}
 
 	if (program_settings.show_formatted)
 	{
-		PRINT_DEBUG("Show formatted:\n");
+		dprintf(1, "Show formatted:\n");
 
 		for (i = (HISTORY_MAX - items_to_read); i < HISTORY_MAX; i++)
 		{
@@ -1613,6 +1660,79 @@ void set_weather_data(struct usb_dev_handle *h)
 	}
 }
 
+
+int file_exists(const char *filename)
+{
+	FILE *f;
+	
+	if ((f = fopen(program_settings.dumpfile, "r")) == NULL)
+	{
+		return 0;
+	}
+	
+	fclose(f);
+	
+	return 1;
+}
+
+char prompt_user()
+{
+	char c;
+	fflush(stdin);
+	scanf("%c", &c);
+	return c;
+}
+
+int dump_memory(struct usb_dev_handle *h)
+{
+	FILE *f; 
+	
+	if (file_exists(program_settings.dumpfile))
+	{
+		fprintf(stderr, "The file \"%s\" already exists. Overwrite? (Y/N): ", program_settings.dumpfile);
+		
+		if (prompt_user() != 'Y')
+		{
+			return -1;
+		}
+	}
+	
+	if (!(f = fopen(program_settings.dumpfile, "w")))
+	{
+		fprintf(stderr, "Failed to open \"%s\"", program_settings.dumpfile);
+		return -1;
+	}
+	else
+	{
+		// Dump the memory to file.
+		unsigned short offset;
+		int trycount;
+		char buf[32];
+		
+		for (offset = 0; offset < (HISTORY_END - 32); offset += 32)
+		{
+			trycount = 0;
+			memset(buf, 0, sizeof(buf));
+			
+			while (read_weather_address(h, offset, buf) && (trycount < NUM_TRIES))
+			{
+				fprintf(stderr, "Failed to read from weather memory offset %d (0x%x). Try %d of %d\n", 
+						offset, offset, trycount + 1, NUM_TRIES);
+				
+				trycount++;
+			}
+			
+			fwrite(buf, 1, sizeof(buf), f);
+			
+			print_bytes(2, buf, 32);
+		}
+	}
+	
+	fclose(f);
+	
+	return 0;
+}
+
 int read_arguments(int argc, char **argv)
 {
 	int c;
@@ -1646,6 +1766,8 @@ int read_arguments(int argc, char **argv)
 			{"altitude", required_argument,		0, 'A'},
 			{"productid", required_argument,	0, 0},
 			{"vendorid", required_argument,		0, 0},
+			{"dumpmem", required_argument,		0, 0},
+			{"infile", required_argument,		0, 0},
 			{0, 0, 0, 0}
 		};
 
@@ -1661,7 +1783,17 @@ int read_arguments(int argc, char **argv)
 		{
 			case 0:
 			{
-				if (!strcmp("format", long_options[option_index].name))
+				if (!strcmp("infile", long_options[option_index].name))
+				{
+					program_settings.from_file = 1;
+					strcpy(program_settings.infile, optarg);
+				}
+				else if (!strcmp("dumpmem", long_options[option_index].name))
+				{
+					program_settings.mode = dump_mode;
+					strcpy(program_settings.dumpfile, optarg);
+				}
+				else if (!strcmp("format", long_options[option_index].name))
 				{
 					program_settings.show_formatted = 1;
 					strcpy(program_settings.format_str, optarg);
@@ -1772,8 +1904,8 @@ int main(int argc, char **argv)
 		printf("%%F - Rain 24h (mm).\n");
 		printf("%%R - Total rain (mm).\n");
 		printf("%%N - Date/time string for the weather reading.\n");
-		printf("%%e - Have we lost contact with the sensor for this reading? (True/False).\n");
-		printf("%%E - Have we lost contact with the sensor for this reading? (1/0).\n");
+		printf("%%e - Do we have contact with the sensor for this reading? (True/False).\n");
+		printf("%%E - Do we have contact with the sensor for this reading? (1/0).\n");
 		printf("%%b - Original bytes in hex format containing the data.\n");
 		printf("%%a - Address in history.\n");
 		printf("%%%% - %% sign\n");
@@ -1787,7 +1919,29 @@ int main(int argc, char **argv)
 	// Open te device.
 	devh = open_device();
 	init_device_descriptors();
+	
+	if (program_settings.from_file)
+	{
+		FILE *f;
+		
+		dprintf(1, "Reading input from \"%s\"\n", program_settings.infile);
+		
+		if (program_settings.mode != get_mode)
+		{
+			fprintf(stderr, "You cannot set any settings or dump the memory while using a dump file as input.\n");
+			goto cleanup;
+		}
 
+		if (!(f = fopen(program_settings.infile, "r")))
+		{
+			fprintf(stderr, "Failed to open file \"%s\". ", program_settings.infile);
+			perror(NULL);
+			goto cleanup;
+		}
+		
+		program_settings.f = f;
+	}
+	
 	switch (program_settings.mode)
 	{
 		default:
@@ -1801,13 +1955,19 @@ int main(int argc, char **argv)
 			set_weather_data(devh);
 			break;
 		}
+		case dump_mode:
+		{
+			if (dump_memory(devh))
+			{
+				fprintf(stderr, "Failed to dump memory.\n");
+			}
+			break;
+		}
 	}
-
+	
+cleanup:
 	close_device(devh);
 
 	return 0;
 }
-
-
-
 
