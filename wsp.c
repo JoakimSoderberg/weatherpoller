@@ -1711,7 +1711,7 @@ int file_exists(const char *filename)
 {
 	FILE *f;
 	
-	if ((f = fopen(program_settings.dumpfile, "r")) == NULL)
+	if ((f = fopen(filename, "r")) == NULL)
 	{
 		return 0;
 	}
