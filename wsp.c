@@ -127,6 +127,7 @@ typedef struct program_settings_s
 	int show_current;			// 0 or 1. Only show the latest values read from the device.
 	int show_maxmin;			// 0 or 1. Show max min values.
 	int show_easyweather;		// 0 or 1. Outputs the history data in the "EasyWeather.dat" format. "count" decides how many.
+	int show_weatherstats;			// 0 or 1. Shows output formated for weatherstats
 	int show_summary;			// 0 or 1. Shows a summary of the current weather.
 	int set_timezone;			// 0 or 1. Should a new timezone be set?
 	signed char timezone;		// -12 to 12. The new timezone to be set.
@@ -339,6 +340,8 @@ void show_usage(char *program_name)
 	printf("\n");
 	printf("  -e, --easyweather     Outputs the weather data in the\n");
 	printf("                        easyweather.dat csv format.\n");
+	printf("  --weatherstats        Outputs the weather data in the\n");
+	printf("                        format for weatherstats.\n");
 	printf("  -s, --status          Shows status of the device, such\n");
 	printf("                        as data count, date/time.\n");
 	printf("  --settings            Prints the weather display's settings.\n");
@@ -1491,6 +1494,43 @@ void print_summary(weather_settings_t *ws, weather_item_t *item)
 	printf("\n");
 }
 
+
+void print_ws_summary(weather_settings_t *ws, weather_item_t *item, weather_item_t *litem)
+{
+	weather_data_t *wd = &item->data;
+	weather_data_t *lwd = &litem->data;
+
+	int contact = has_contact_with_sensor(wd);
+
+	printf("Outdoor sensors: %s\n", (!contact) ? "NO CONTACT WITH SENSOR" : "OK");
+
+	printf("For postprocessing\n\n");
+
+	printf("Interval\t%u min\n",					wd->delay);
+	printf("Indoor humidity\t%u %%\n",				wd->in_humidity);
+	printf("Indoor temperature\t%2.1f C\n",				wd->in_temp * 0.1f);
+
+	// Only show current data if we have sensor contact.
+	if (contact)
+	{
+		printf("Outdoor temperature\t%0.1f C\n",		wd->out_temp * 0.1f );
+		printf("Outdoor humidity\t%u %%\n",			wd->out_humidity);
+		printf("Wind speed\t%0.1f m/s\n",			convert_avg_windspeed(wd));
+		printf("Wind gust\t%2.1f m/s\n",			convert_gust_windspeed(wd));
+		printf("Wind direction\t%0.0f %s\n",			wd->wind_direction * 1.0f, get_wind_direction(wd->wind_direction));
+		if (wd->delay != 0) {
+			printf("Rain 1h\t%0.1f mm\n",			((wd->total_rain) - (lwd->total_rain)) * 0.3f * (60/wd->delay));
+		} else {
+			printf("Rain 1h\t%0.1f mm\n",			0.0f);
+		}
+		printf("Rain total\t%0.1f mm\n",		wd->total_rain * 0.3f);
+		printf("Air pressure\t%0.1f hPa\n",			wd->abs_pressure * 0.1f);
+	}
+
+	printf("\n");
+}
+
+
 void get_weather_data(struct usb_dev_handle *h)
 {
 	int i = 0;
@@ -1604,6 +1644,12 @@ void get_weather_data(struct usb_dev_handle *h)
 	{
 		debug_printf(1, "Show summary:\n");
 		print_summary(&ws, &history[HISTORY_MAX - 1]);
+	}
+
+	if (program_settings.show_weatherstats)
+	{
+		debug_printf(1, "Show weatherstat summary:\n");
+		print_ws_summary(&ws, &history[HISTORY_MAX - 1], &history[HISTORY_MAX - 2]);
 	}
 
 	if (program_settings.show_formatted)
@@ -1755,6 +1801,7 @@ int read_arguments(int argc, char **argv)
 			{"maxmin", no_argument,			&program_settings.show_maxmin, 1},
 			{"settings", no_argument,		&program_settings.show_settings, 1},
 			{"easyweather", no_argument,	&program_settings.show_easyweather, 1},
+			{"weatherstats",no_argument,		&program_settings.show_weatherstats, 1},
 			{"summary", no_argument,		&program_settings.show_summary, 1},
 			{"quickrain", no_argument,		&program_settings.quickrain, 1},
 			{"count", required_argument,		0, 'c'},
@@ -1858,7 +1905,8 @@ int read_arguments(int argc, char **argv)
 	&& !program_settings.show_maxmin
 	&& !program_settings.show_easyweather
 	&& !program_settings.show_formatlist
-	&& !program_settings.show_formatted)
+	&& !program_settings.show_formatted
+	&& !program_settings.show_weatherstats)
 	{
 		program_settings.show_summary = 1;
 	}
