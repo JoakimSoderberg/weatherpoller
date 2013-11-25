@@ -1,6 +1,7 @@
 CC=gcc
 CFLAGS=-Wall -lm -lusb
-SOURCES=wsp.c
+LFLAGS=
+SOURCES=wsp.c memory.c utils.c wspusb.c output.c weather.c
 DISTFILES=$(SOURCES) makefile LICENSE.TXT
 OBJECTS=$(SOURCES:.c=.o)
 EXECUTABLE=wsp
@@ -12,8 +13,10 @@ all: $(SOURCES) $(EXECUTABLE)
 dist:
 	zip wsp-v$(VERSION)-b$(BUILD).zip $(DISTFILES) 
 
-$(EXECUTABLE): $(OBJECTS)
-	$(CC) $(CFLAGS) $(SOURCES) -o $@
 .c.o:
-	$(CC) $(CFLAGS) $< -o $@
+	$(CC) -c $(CFLAGS) $<
 
+$(EXECUTABLE): $(OBJECTS)
+	$(CC) $(CFLAGS) $(OBJECTS) -o $@
+
+	
