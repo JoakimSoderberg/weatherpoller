@@ -18,7 +18,6 @@
 //
 
 #include <stdio.h>
-#include <usb.h>
 #include "wsp.h"
 #include "utils.h"
 #include "weather.h"
@@ -43,7 +42,7 @@ float calculate_dewpoint(weather_data_t *wd)
 	#define DEW_A 17.27
 	#define DEW_B 237.7
 	float temp = wd->out_temp * 0.1f;
-	float gamma = (DEW_A * temp / (DEW_B + temp)) + log(wd->out_humidity / 100.0);
+	float gamma = (DEW_A * temp / (DEW_B + temp)) + log(wd->out_humidity / 100.0f);
 	float dew_point = DEW_B * gamma / (DEW_A - gamma);
 	return dew_point;
 }
@@ -57,9 +56,9 @@ float calculate_windchill(weather_data_t *wd)
 	float avg_windspeed = convert_avg_windspeed(wd);
 	float t = wd->out_temp * 0.1f;
 
-	if ((t < 33.0) && (avg_windspeed >= 1.79))
+	if ((t < 33.0f) && (avg_windspeed >= 1.79f))
 	{
-		wc = 33 + ((t - 33) * (0.55 + (0.417 * sqrt(avg_windspeed)) - (0.0454 * avg_windspeed)));
+		wc = 33.0f + ((t - 33.0f) * (0.55f + (0.417f * (float)sqrt(avg_windspeed)) - (0.0454f * avg_windspeed)));
 	}
 	else
 	{
@@ -79,7 +78,7 @@ float calculate_rel_pressure(weather_data_t *wd)
 {
 	float p = wd->abs_pressure * 0.1f;
 	float m = program_settings.altitude / (18429.1 + 67.53 * wd->out_temp + 0.003 * program_settings.altitude);
-	p = p * pow(10, m);
+	p = p * (float)pow(10, m);
 	return p;
 }
 
@@ -113,7 +112,7 @@ weather_item_t *get_history_item_seconds_delta(struct usb_dev_handle *h, weather
 		// just return the current item instead, so we don't get
 		// inaccurate data (like calculating over 5 hours when we
 		// were asked for 24h).
-		if (i < (HISTORY_MAX - ws->data_count))
+		if (i < (unsigned int)(HISTORY_MAX - ws->data_count))
 		{
 			return &history[index];
 		}
@@ -143,7 +142,7 @@ weather_item_t *get_history_item_seconds_delta(struct usb_dev_handle *h, weather
 	{
 		// Go through enough previous (or future) history items relative to the current index
 		// until we find the closest item which is "seconds_delta" seconds from the current history item.
-		for (i = (index - 1); (i > (HISTORY_MAX - ws->data_count)) && (i < HISTORY_MAX); i--)
+		for (i = (index - 1); (i > (unsigned int)(HISTORY_MAX - ws->data_count)) && (i < HISTORY_MAX); i--)
 		{
 			// We don't have enough history items to go any further.
 			if (history[i].timestamp == 0)

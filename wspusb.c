@@ -19,7 +19,6 @@
 
 #include <stdio.h>
 #include <assert.h>
-#include <usb.h>
 #include "wsp.h"
 #include "wspusb.h"
 
@@ -88,14 +87,18 @@ struct usb_dev_handle *open_device()
 
     h = usb_open(dev);
     assert(h);
+
+	#ifdef LINUX
     ret = usb_get_driver_np(h, 0, buf, sizeof(buf));
 
     if (ret == 0)
 	{
 		//fprintf(stderr, "Interface 0 already claimed by driver \"%s\", attempting to detach it.\n", buf);
 		ret = usb_detach_kernel_driver_np(h, 0);
+		// TODO: Check ret here.
 		//printf("usb_detach_kernel_driver_np returned %d\n", ret);
     }
+	#endif
 
     ret = usb_claim_interface(h, 0);
 

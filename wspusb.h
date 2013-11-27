@@ -20,6 +20,12 @@
 #ifndef __WSPUSB_H__
 #define __WSPUSB_H__
 
+#ifdef WIN32
+#include <lusb0_usb.h>
+#else
+#include <usb.h>
+#endif
+
 struct usb_device *find_device(int vendor, int product);
 void close_device(struct usb_dev_handle *h);
 struct usb_dev_handle *open_device();

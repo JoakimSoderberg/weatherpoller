@@ -18,7 +18,6 @@
 //
 
 #include <stdio.h>
-#include <usb.h>
 #include "wsp.h"
 #include "memory.h"
 #include "utils.h"

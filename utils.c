@@ -116,13 +116,13 @@ const char *get_wind_direction(const char data)
 //
 // Prints bytes for debug purposes.
 //
-void print_bytes(int debug_level, char *bytes, unsigned int len)
+void print_bytes(unsigned int debug_level, char *bytes, unsigned int len)
 {
     if ((debug >= debug_level) && (len > 0))
 	{
-		int i;
+		unsigned int i;
 
-		for (i=0; i < len; i++)
+		for (i = 0; i < len; i++)
 		{
 			printf("%02x ", (int)((unsigned char)bytes[i]));
 		}

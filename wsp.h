@@ -20,9 +20,15 @@
 #ifndef __WSP_H__
 #define __WSP_H__
 
+#ifdef WIN32
+#include <lusb0_usb.h>
+#else
 #include <usb.h>
+#endif
 
+#ifndef max
 #define max(a, b) ((a)>(b) ? (a) : (b))
+#endif
 
 #define MAJOR_VERSION 1
 #define MINOR_VERSION 0
@@ -100,7 +106,7 @@ typedef struct program_settings_s
 } program_settings_t;
 
 extern program_settings_t program_settings;
-extern int debug;
+extern unsigned int debug;
 
 //
 // Based on http://www.jim-easterbrook.me.uk/weather/mm/
@@ -281,10 +287,6 @@ typedef struct weather_item_s
 	time_t timestamp;
 	unsigned int address;
 } weather_item_t;
-
-void debug_printf(unsigned int debug_level, const char* format, ... );
-void print_bytes(int debug_level, char *bytes, unsigned int len);
-
 
 weather_data_t get_history_chunk(struct usb_dev_handle *h, weather_settings_t *ws, unsigned short history_pos);
 

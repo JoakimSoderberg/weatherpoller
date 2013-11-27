@@ -28,10 +28,8 @@
 #include <assert.h>
 #include <signal.h>
 #include <ctype.h>
-#include <usb.h>
 #include <time.h>
 #include <math.h>
-#include <getopt.h>
 
 typedef struct bcd_date_s
 {
@@ -48,7 +46,7 @@ bcd_date_t parse_bcd_date(unsigned char date[5]);
 void print_bcd_date(unsigned char date[5]);
 const char *get_bcd_date_string(unsigned char date[5]);
 const char *get_wind_direction(const char data);
-void print_bytes(int debug_level, char *bytes, unsigned int len);
+void print_bytes(unsigned int debug_level, char *bytes, unsigned int len);
 int file_exists(const char *filename);
 char prompt_user();
 char *get_timestamp(time_t t);

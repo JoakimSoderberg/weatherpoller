@@ -36,7 +36,6 @@
 #include <assert.h>
 #include <signal.h>
 #include <ctype.h>
-#include <usb.h>
 #include <time.h>
 #include <math.h>
 #include <getopt.h>
@@ -52,7 +51,7 @@ program_settings_t program_settings;
 typedef unsigned char byte;
 
 struct usb_dev_handle *devh;
-int debug = 0;
+unsigned int debug = 0;
 
 //
 // Shows usage.
@@ -436,7 +435,7 @@ void get_weather_data(struct usb_dev_handle *h)
 		unsigned int seconds = 0;
 		unsigned int history_begin = (ws.current_pos + HISTORY_CHUNK_SIZE);
 		int history_index;
-		int j;
+		unsigned int j;
 
 		memset(&history, 0, sizeof(history));
 

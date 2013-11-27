@@ -14,6 +14,8 @@
 include ( CheckLibraryExists )
 include ( CheckIncludeFile )
 
+message("$ENV{LibUSB_ROOT_DIR}")
+
 find_package ( PkgConfig )
 if ( PKG_CONFIG_FOUND )
   pkg_check_modules ( PKGCONFIG_LIBUSB libusb )
@@ -37,6 +39,7 @@ else ( PKGCONFIG_LIBUSB_FOUND )
   find_path ( LibUSB_INCLUDE_DIRS
     NAMES
       usb.h
+      lusb0_usb.h
     PATHS
       $ENV{ProgramFiles}/LibUSB-Win32
       $ENV{LibUSB_ROOT_DIR}
@@ -83,7 +86,11 @@ endif ( PKGCONFIG_LIBUSB_FOUND )
 
 if ( LibUSB_FOUND )
   set ( CMAKE_REQUIRED_INCLUDES "${LibUSB_INCLUDE_DIRS}" )
-  check_include_file ( usb.h LibUSB_FOUND )
+  if ( WIN32 )
+    check_include_file ( lusb0_usb.h LibUSB_FOUND )
+  else ( WIN32 )
+    check_include_file ( usb.h LibUSB_FOUND )
+  endif ( WIN32 )
 #    message ( STATUS "LibUSB: usb.h is usable: ${LibUSB_FOUND}" )
 endif ( LibUSB_FOUND )
 if ( LibUSB_FOUND )
