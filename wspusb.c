@@ -88,23 +88,24 @@ struct usb_dev_handle *open_device()
     h = usb_open(dev);
     assert(h);
 
-	#ifdef LINUX
+	#ifdef LIBUSB_HAS_GET_DRIVER_NP
     ret = usb_get_driver_np(h, 0, buf, sizeof(buf));
 
     if (ret == 0)
 	{
-		//fprintf(stderr, "Interface 0 already claimed by driver \"%s\", attempting to detach it.\n", buf);
-		ret = usb_detach_kernel_driver_np(h, 0);
-		// TODO: Check ret here.
-		//printf("usb_detach_kernel_driver_np returned %d\n", ret);
+		if ((ret = usb_detach_kernel_driver_np(h, 0)) != 0)
+		{
+			fprintf(stderr, "Could not open usb device. Failed o detached from driver \"%s\": %d\n", buf, ret);
+			exit(1);
+		}
     }
-	#endif
+	#endif // LIBUSB_HAS_GET_DRIVER_NP
 
     ret = usb_claim_interface(h, 0);
 
     if (ret != 0)
 	{
-		fprintf(stderr, "Could not open usb device, errorcode - %d\n", ret);
+		fprintf(stderr, "Could not open usb device, errorcode: %d\n", ret);
 		exit(1);
     }
 
@@ -112,7 +113,7 @@ struct usb_dev_handle *open_device()
 
 	if (!h || ret != 0)
 	{
-		fprintf(stderr, "Failed to open USB device, errorcode - %d\n", ret);
+		fprintf(stderr, "Failed to open USB device, errorcode: %d\n", ret);
 		exit(1);
 	}
 
@@ -138,7 +139,7 @@ void init_device_descriptors(struct usb_dev_handle *h)
 	ret = usb_claim_interface(h, 0);
 
 	if (ret != 0)
-		fprintf(stderr, "Claim after set_configuration failed with error %d\n", ret);
+		fprintf(stderr, "Claim after set_configuration failed with error: %d\n", ret);
 
 	ret = usb_set_altinterface(h, 0);
 	ret = usb_control_msg(h, USB_TYPE_CLASS + USB_RECIP_INTERFACE, 0xa, 0, 0, NULL, 0, USB_TIMEOUT);
