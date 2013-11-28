@@ -113,7 +113,7 @@ extern unsigned int debug;
 //
 typedef struct weather_settings_s
 {
-	char			magic_number[2];
+	unsigned char	magic_number[2];
 	unsigned char	read_period;		// Minutes between each stored reading.
 
 	unsigned char	unit_settings1;		// bit 0: indoor temperature: 0 = °C, 1 = °F
