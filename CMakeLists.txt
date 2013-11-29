@@ -42,5 +42,5 @@ if (UNIX)
 	target_link_libraries(wsp m)
 endif()
 
-
+install(TARGETS wsp DESTINATION bin)
 

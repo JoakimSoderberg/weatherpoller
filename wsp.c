@@ -93,7 +93,7 @@ void show_usage(char *program_name)
 	printf("                        might be calculated incorrectly.\n");
 	printf("  --vendorid #          Changes the vendor id, should be in hex format.\n");
     printf("                        Default is %x.\n", VENDOR_ID);
-	printf("  --productid #         Changes the product id, shoulb be in hex format.\n");
+	printf("  --productid #         Changes the product id, should be in hex format.\n");
 	printf("                        Default is %x.\n", PRODUCT_ID);
 	printf("  --format <string>     Writes the output in the given format.\n");
 	printf("  --formatlist          Lists available format string variables.\n");

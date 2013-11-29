@@ -101,6 +101,7 @@ struct usb_dev_handle *open_device()
     }
 	#endif // LIBUSB_HAS_GET_DRIVER_NP
 
+    // TODO: Add support for using HIDAPI instead on OSX. http://www.libusb.org/ticket/89
     ret = usb_claim_interface(h, 0);
 
     if (ret != 0)
